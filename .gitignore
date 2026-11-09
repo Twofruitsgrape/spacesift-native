@@ -1,0 +1,23 @@
+# 编译产物
+build/
+dist/
+*.o
+*.exe
+
+# 第三方压缩包（已解压，源码在 third_party/sqlite/sqlite-amalgamation-*/）
+third_party/sqlite.zip
+
+# ImGui 的文档/示例/杂项，编译用不到，省 3.7 MB
+third_party/imgui/docs/
+third_party/imgui/examples/
+third_party/imgui/misc/
+
+# 本地调试与截图
+*.png
+*.log
+TASK_*.md
+verify.py
+shot.py
+check_paths.py
+run_test.py
+try_scan.py
