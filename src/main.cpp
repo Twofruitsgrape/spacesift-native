@@ -1854,6 +1854,12 @@ static void DrawContentSearchTab() {
         if (GhostButton("增量更新", ImVec2(0, 26))) StartContentIndex();
         if (!extract::PdfReady())
             ImGui::TextDisabled("提示：同目录放一个 pdfium.dll 才能搜 PDF 正文。");
+        if (!extract::DwgReady())
+            ImGui::TextDisabled("提示：要搜 .dwg 需要 dwg2dxf.exe + libredwg-0.dll 或 ODA File Converter。");
+        if (!extract::LegacyReady())
+            ImGui::TextDisabled("提示：.doc/.ppt/.xls 需要 catdoc 系列或 LibreOffice。");
+        if (!extract::ArchiveReady())
+            ImGui::TextDisabled("提示：.7z/.rar 需要安装 7-Zip 或 WinRAR。");
         return;
     }
     if (g_hits.empty()) {

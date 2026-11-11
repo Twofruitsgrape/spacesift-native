@@ -36,7 +36,7 @@ g++ -O2 -std=c++17 -static -s -mwindows ^
   -I third_party/imgui -I third_party/imgui/backends ^
   -I third_party/sqlite/sqlite-amalgamation-3450000 -I third_party/miniz ^
   -I third_party/pdfium/include -I src ^
-  src/main.cpp src/db.cpp src/rules.cpp src/extract.cpp src/content.cpp ^
+  src/main.cpp src/db.cpp src/rules.cpp src/extract.cpp src/content.cpp src/external.cpp ^
   build\sqlite3.o build\miniz.o build\miniz_tdef.o build\miniz_tinfl.o build\miniz_zip.o ^
   build\app_res.o ^
   third_party/imgui/imgui.cpp third_party/imgui/imgui_draw.cpp ^
@@ -46,12 +46,23 @@ g++ -O2 -std=c++17 -static -s -mwindows ^
   -o build\SpaceSift.exe
 if errorlevel 1 exit /b 1
 
+REM 可选依赖：DWG 靠 dwg2dxf.exe（LibreDWG，GPLv3）+ libredwg-0.dll（~32 MB）
+REM 把它们放在 third_party\libredwg\ 下就会被自动带上；没有就跳过 .dwg
+if exist third_party\libredwg\dwg2dxf.exe (
+  copy /y third_party\libredwg\dwg2dxf.exe build\ >nul
+  copy /y third_party\libredwg\libredwg-0.dll build\ >nul
+  copy /y third_party\libredwg\libiconv-2.dll build\ >nul
+  echo [4/5] 已带上 DWG 转换器（LibreDWG）
+) else (
+  echo [4/5] 没有 third_party\libredwg，.dwg 不参与索引
+)
+
 REM PDF 支持靠运行时的 pdfium.dll（7.8 MB），没有它也能跑，只是搜不到 PDF 正文
 if exist third_party\pdfium\bin\pdfium.dll (
   copy /y third_party\pdfium\bin\pdfium.dll build\ >nul
-  echo [4/4] 已复制 pdfium.dll（PDF 内容检索可用）
+  echo [5/5] 已复制 pdfium.dll（PDF 内容检索可用）
 ) else (
-  echo [4/4] 未找到 pdfium.dll，PDF 不参与索引
+  echo [5/5] 未找到 pdfium.dll，PDF 不参与索引
 )
 
 echo.

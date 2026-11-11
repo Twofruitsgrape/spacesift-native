@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "content.h"
+#include "external.h"
 #include "extract.h"
 #include "miniz.h"
 #include "sqlite3.h"
@@ -77,9 +78,24 @@ int main() {
     Check(extract::Supports(".txt"), "支持 .txt");
     Check(extract::Supports(".dxf"), "支持 .dxf");
     Check(extract::Supports(".step") && extract::Supports(".stp"), "支持 .step/.stp");
-    Check(!extract::Supports(".dwg"), ".dwg 暂不支持（P4）");
+    Check(extract::Supports(".dwg") == extract::DwgReady(), ".dwg 随转换器可用性启用/禁用");
     Check(extract::PdfReady(), "pdfium.dll 已加载（PDF 可检索）");
     Check(extract::Supports(".pdf"), "支持 .pdf");
+
+    // 外部进程层：拿 cmd 的回显跑一遍 RunCapture
+    {
+        std::string out;
+        Check(external::RunCapture(L"C:\\Windows\\System32\\cmd.exe",
+                                   L"/c echo probe_from_external", out),
+              "external::RunCapture 能跑进程并收回输出");
+        Check(Contains(out, "probe_from_external"), "回收的输出内容正确");
+    }
+
+    if (extract::DwgReady()) {
+        Check(true, "DWG 转换器已就位（dwg2dxf / ODA）");
+    } else {
+        printf("[SKIP] 未找到 DWG 转换器，跳过 DWG 用例\n");
+    }
     Check(extract::LowerExt("C:\\A\\B.STEP") == ".step", "扩展名转小写");
 
     // 造一个测试目录
@@ -107,6 +123,15 @@ int main() {
                "#1 = CARTESIAN_POINT('',(0.,0.,0.));\n"
                "#42 = PRODUCT('法兰盘','法兰盘','',(#43));\n"
                "ENDSEC;\nEND-ISO-10303-21;\n");
+    // 7) P4：DWG（靠外部 dwg2dxf.exe）——没转换器就跳过这一段
+    const bool dwg = extract::DwgReady();
+    if (dwg) {
+        std::string src = "C:\\Users\\ALICE\\AppData\\Local\\Temp\\libredwg-0.14\\test\\test-data\\example_2000.dwg";
+        std::string bytes;
+        if (external::ReadFileBytes(extract::ToWide(src), bytes, 8u * 1024 * 1024))
+            WriteBytes(dir + L"\\e.dwg", bytes);
+    }
+
     // 5) OBJ：只有命名行有意义
     WriteBytes(dir + L"\\o.obj", "# comment 关键词丁\ng 支架组\nv 1.0 2.0 3.0\nusemtl 材料A\n");
 
@@ -156,8 +181,11 @@ int main() {
         {"\\a.zip",    "内层说明.md"},      // 压缩包条目名
         {"\\a.zip",    "压缩包内文本关键词辛"},   // 压缩包内文本文件
         {"\\r.pdf",    "Keyword Omega"},      // PDF 文本层
+        {"\\e.dwg",    "teksto"},            // DWG（经 dwg2dxf 转 DXF）
     };
+    if (!extract::DwgReady()) cases[sizeof cases / sizeof cases[0] - 1].must = "__skip__";
     for (auto& c : cases) {
+        if (std::string(c.must) == "__skip__") continue;
         std::string p = dirU8 + c.f;
         std::string t = extract::Text(p, extract::LowerExt(p));
         char label[160];

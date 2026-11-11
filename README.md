@@ -13,10 +13,11 @@
 - **内容检索** — 搜文件内部文字，结果带命中片段，可勾选进批量清理
   - 文本/代码：`txt md csv tsv log json xml yml yaml ini html css` 等 60+ 后缀，自动识别 UTF-8 / GBK / UTF-16
   - Office：`docx docm xlsx xlsm pptx pptm odt ods odp`（直接读 OOXML，不需要装 Office）
-  - 图纸：`dxf`（抓 TEXT/MTEXT/ATTRIB 属性块，不吞坐标）
+  - 图纸：`dxf`（抓 TEXT/MTEXT/ATTRIB 属性块，不吞坐标）、`dwg`（外部转换器，见下）
   - 三维：`step stp`（只抓单引号里的零件名/文件名）、`iges igs`、`obj`
+  - 旧版 Office：`doc ppt xls`（靠 catdoc / antiword / LibreOffice，装了才启用）
   - PDF：`pdf`（文本层，最多前 300 页；**需要 pdfium.dll 放同目录**，没有就不参与索引）
-  - 压缩包：`zip` 的条目名 + 里面的文本/Office 文件（解压总量上限 4 MB）
+  - 压缩包：`zip` 原生（条目名 + 内层文本/Office）；`7z rar` 靠外部 7-Zip / WinRAR（只索引条目名）
   - 索引独立成库 `content_<root>.db`，按文件大小+修改时间增量更新，不重复抽取
 - **二次确认** — 任何删除都先弹窗列出清单，确认后才执行，不进回收站
 - **安全边界** — 只处理扫描范围内的路径，系统受保护目录一律跳过
@@ -32,6 +33,18 @@
    - 点「清理选中项」，在弹窗里确认
 
 > 推荐清理的规则针对系统/应用缓存目录。扫描非系统盘时这些项目不会出现，属正常。
+
+### 外部依赖（全部可选，缺了只是对应格式不参与索引）
+
+| 格式 | 需要 | 体积 |
+|---|---|---|
+| `pdf` | `pdfium.dll` 放 exe 同目录 | 7.8 MB |
+| `dwg` | `dwg2dxf.exe` + `libredwg-0.dll` + `libiconv-2.dll`（LibreDWG，GPLv3） | 32 MB |
+| `dwg`（更准） | ODA File Converter，自动探测 `Program Files\ODA\` | — |
+| `doc ppt xls` | `catdoc` / `catppt` / `xls2csv` / `antiword`，或 LibreOffice | — |
+| `7z rar` | 7-Zip 或 WinRAR（从 PATH 找） | — |
+
+主程序不链接任何 GPL 代码，全部走子进程调用。缺哪个，右栏「检索结果」会提示。
 
 ### 内容检索怎么用
 

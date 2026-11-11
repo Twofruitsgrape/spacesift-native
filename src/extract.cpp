@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "miniz.h"
+#include "external.h"
 // 只用声明和类型；函数体全部靠 LoadLibrary + GetProcAddress 拿到，
 // 所以没装 pdfium.dll 也能编译、能运行，只是 PDF 不参与索引。
 #include "fpdf_text.h"
@@ -190,7 +191,13 @@ void Append(std::string& out, const std::string& s) {
     std::string t = Trim(s);
     if (t.empty()) return;
     size_t room = kStoreCap - out.size();
-    out.append(t, 0, std::min(room, t.size()));
+    if (t.size() > room) {
+        // 截断不能在 UTF-8 多字节字符中间停下，否则整段会被当成 GBK 解成乱码
+        t.resize(room);
+        while (!t.empty() && ((unsigned char)t.back() & 0xC0) == 0x80) t.pop_back();
+        if (!t.empty() && (unsigned char)t.back() >= 0xC0) t.pop_back();
+    }
+    out.append(t);
     out.push_back('\n');
 }
 
@@ -618,6 +625,248 @@ std::string PdfText(const std::string& path) {
     return out;
 }
 
+// ======================= P4：DWG（外部转换器）=======================
+
+// 优先级：LibreDWG 的 dwg2dxf（自带、开箱即用）> ODA File Converter（机器上装了就用，更准）
+struct DwgConv {
+    bool         tried = false;
+    int          kind = -1;     // 0 = dwg2dxf, 1 = ODA
+    std::wstring exe;
+};
+
+std::wstring FindOda() {
+    wchar_t win[MAX_PATH];
+    const DWORD n = GetWindowsDirectoryW(win, MAX_PATH);
+    if (n == 0 || n < 2) return {};
+    const std::wstring drive(win, 2);          // "C:"
+
+    const wchar_t* roots[] = {L"\\Program Files\\ODA\\",
+                              L"\\Program Files (x86)\\ODA\\"};
+    for (const wchar_t* r : roots) {
+        const std::wstring pattern = drive + r + L"*";
+        WIN32_FIND_DATAW fd;
+        HANDLE h = FindFirstFileW(pattern.c_str(), &fd);
+        if (h == INVALID_HANDLE_VALUE) continue;
+        do {
+            if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0) continue;
+            const std::wstring exe = drive + r + fd.cFileName + L"\\ODAFileConverter.exe";
+            if (external::FileExists(exe)) {
+                FindClose(h);
+                return exe;
+            }
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+    return {};
+}
+
+DwgConv& DwgConverter() {
+    static DwgConv c;
+    if (c.tried) return c;
+    c.tried = true;
+
+    const std::wstring dir = external::ExeDir();
+    const wchar_t* rel[] = {L"\\dwg2dxf.exe", L"\\libredwg\\dwg2dxf.exe",
+                            L"\\dwg2dxf\\dwg2dxf.exe", L"\\bin\\dwg2dxf.exe"};
+    for (const wchar_t* r : rel) {
+        const std::wstring p = dir + r;
+        if (external::FileExists(p)) { c.kind = 0; c.exe = p; return c; }
+    }
+    const std::wstring onPath = external::FindOnPath(L"dwg2dxf.exe");
+    if (!onPath.empty()) { c.kind = 0; c.exe = onPath; return c; }
+
+    const std::wstring oda = FindOda();
+    if (!oda.empty()) { c.kind = 1; c.exe = oda; return c; }
+    return c;
+}
+
+std::string DwgText(const std::string& path) {
+    DwgConv& c = DwgConverter();
+    if (c.kind < 0) return {};
+    const std::wstring src = ToWide(path);
+    std::string raw;
+
+    if (c.kind == 0) {
+        const std::wstring out = external::TempName(L".dxf");
+        if (out.empty()) return {};
+        const std::wstring args = L"-y -y -o \"" + out + L"\" \"" + src + L"\"";
+        external::RunSilent(c.exe, args, 120000);
+        if (external::FileExists(out)) raw = DxfStrings(FromWide(out));
+        external::DeleteQuiet(out);
+        return raw;
+    }
+
+    // ODA 只支持文件夹批处理：建临时入/出目录，把文件拷进去
+    const std::wstring inDir = external::TempName(L"_in");
+    const std::wstring outDir = external::TempName(L"_out");
+    if (inDir.empty() || outDir.empty()) return {};
+    if (!CreateDirectoryW(inDir.c_str(), nullptr)) return {};
+    if (!CreateDirectoryW(outDir.c_str(), nullptr)) { RemoveDirectoryW(inDir.c_str()); return {}; }
+
+    const std::wstring inFile = inDir + L"\\in.dwg";
+    if (!CopyFileW(src.c_str(), inFile.c_str(), FALSE)) {
+        RemoveDirectoryW(inDir.c_str());
+        RemoveDirectoryW(outDir.c_str());
+        return {};
+    }
+
+    const std::wstring args = L"\"" + inDir + L"\" \"" + outDir +
+                              L"\" ACAD2018 DXF 0 1 \"*.dwg\"";
+    external::RunSilent(c.exe, args, 300000);
+
+    // 产物名不一定可靠，直接扫出目录里的第一个 .dxf
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW((outDir + L"\\*.dxf").c_str(), &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+        if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0)
+            raw = DxfStrings(FromWide(outDir + L"\\" + fd.cFileName));
+        FindClose(h);
+        WIN32_FIND_DATAW f2;
+        HANDLE h2 = FindFirstFileW((outDir + L"\\*").c_str(), &f2);
+        if (h2 != INVALID_HANDLE_VALUE) {
+            do {
+                if ((f2.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0)
+                    external::DeleteQuiet(outDir + L"\\" + f2.cFileName);
+            } while (FindNextFileW(h2, &f2));
+            FindClose(h2);
+        }
+    }
+    external::DeleteQuiet(inFile);
+    RemoveDirectoryW(inDir.c_str());
+    RemoveDirectoryW(outDir.c_str());
+    return raw;
+}
+
+// ======================= .doc / .ppt / .xls（外部转换器）=======================
+
+std::wstring FindTool(const wchar_t* name) {
+    std::wstring p = external::FindOnPath(name);
+    if (!p.empty()) return p;
+    const std::wstring dir = external::ExeDir();
+    for (const wchar_t* rel : {L"\\", L"\\bin\\", L"\\tools\\"}) {
+        const std::wstring q = dir + rel + name;
+        if (external::FileExists(q)) return q;
+    }
+    return {};
+}
+
+std::wstring FindSoffice() {
+    std::wstring p = FindTool(L"soffice.exe");
+    if (!p.empty()) return p;
+    wchar_t win[MAX_PATH];
+    const DWORD n = GetWindowsDirectoryW(win, MAX_PATH);
+    if (n == 0 || n < 2) return {};
+    const std::wstring drive(win, 2);
+    for (const wchar_t* r : {L"\\Program Files\\LibreOffice\\program\\soffice.exe",
+                             L"\\Program Files (x86)\\LibreOffice\\program\\soffice.exe"}) {
+        const std::wstring q = drive + r;
+        if (external::FileExists(q)) return q;
+    }
+    return {};
+}
+
+// LibreOffice 把结果写到文件而不是 stdout
+std::string SofficeText(const std::wstring& soffice, const std::string& path) {
+    const std::wstring dir = external::TempName(L"_lo");
+    if (dir.empty() || !CreateDirectoryW(dir.c_str(), nullptr)) return {};
+
+    const std::wstring args = L"--headless --norestore --nolockcheck "
+                              L"--convert-to \"txt:Text (encoded):UTF8\" "
+                              L"--outdir \"" + dir + L"\" \"" + ToWide(path) + L"\"";
+    external::RunSilent(soffice, args, 180000);
+
+    size_t slash = path.find_last_of('\\');
+    std::string base = (slash == std::string::npos) ? path : path.substr(slash + 1);
+    const size_t dot = base.find_last_of('.');
+    if (dot != std::string::npos) base = base.substr(0, dot);
+
+    const std::wstring outFile = dir + L"\\" + ToWide(base) + L".txt";
+    std::string raw;
+    external::ReadFileBytes(outFile, raw, kStoreCap * 2);
+    external::DeleteQuiet(outFile);
+    RemoveDirectoryW(dir.c_str());
+    return raw;
+}
+
+std::string LegacyText(const std::string& path, const std::string& ext) {
+    const std::wstring src = ToWide(path);
+    std::string out;
+
+    // catdoc 系优先：启动快，直接吐 stdout，秒级
+    if (ext == ".doc") {
+        const std::wstring t = FindTool(L"catdoc.exe");
+        if (!t.empty() && external::RunCapture(t, L"-d utf-8 \"" + src + L"\"", out, kStoreCap, 30000))
+            return out;
+        const std::wstring a = FindTool(L"antiword.exe");
+        if (!a.empty() && external::RunCapture(a, L"-m UTF-8.txt \"" + src + L"\"", out, kStoreCap, 30000))
+            return out;
+    } else if (ext == ".ppt") {
+        const std::wstring t = FindTool(L"catppt.exe");
+        if (!t.empty() && external::RunCapture(t, L"-d utf-8 \"" + src + L"\"", out, kStoreCap, 30000))
+            return out;
+    } else if (ext == ".xls") {
+        const std::wstring t = FindTool(L"xls2csv.exe");
+        if (!t.empty() && external::RunCapture(t, L"-d utf-8 \"" + src + L"\"", out, kStoreCap, 30000))
+            return out;
+    }
+
+    // 兜底 LibreOffice（慢：每个文件都要起一次 soffice）
+    const std::wstring so = FindSoffice();
+    if (!so.empty()) return SofficeText(so, path);
+    return {};
+}
+
+// ======================= .7z / .rar（外部 7z / UnRAR）=======================
+
+std::wstring FindArchiver(std::wstring* kind) {
+    for (const wchar_t* n : {L"7z.exe", L"7za.exe", L"7zz.exe"}) {
+        const std::wstring p = FindTool(n);
+        if (!p.empty()) { if (kind) *kind = L"7z"; return p; }
+    }
+    for (const wchar_t* n : {L"UnRAR.exe", L"unrar.exe"}) {
+        const std::wstring p = FindTool(n);
+        if (!p.empty()) { if (kind) *kind = L"unrar"; return p; }
+    }
+    return {};
+}
+
+// 只能列条目名：逐个解出来抽文本意味着每个条目起一次进程，代价太高。
+// 但"哪个压缩包里有 XXX.dwg"已经能回答了。
+std::string ArchiveText(const std::string& path) {
+    std::wstring kind;
+    const std::wstring exe = FindArchiver(&kind);
+    if (exe.empty()) return {};
+
+    std::string out;
+    if (kind == L"7z") {
+        if (!external::RunCapture(exe, L"l -ba -slt -- \"" + ToWide(path) + L"\"", out,
+                                  kStoreCap, 60000))
+            return {};
+        std::string names;
+        size_t pos = 0;
+        while (pos < out.size()) {
+            size_t nl = out.find('\n', pos);
+            if (nl == std::string::npos) nl = out.size();
+            const std::string line = out.substr(pos, nl - pos);
+            if (line.compare(0, 7, "Path = ") == 0 && pos != 0) Append(names, line.substr(7));
+            pos = nl + 1;
+        }
+        return names;
+    }
+    // UnRAR lb：一行一个文件名
+    if (!external::RunCapture(exe, L"lb \"" + ToWide(path) + L"\"", out, kStoreCap, 60000))
+        return {};
+    std::string names;
+    size_t pos = 0;
+    while (pos < out.size()) {
+        size_t nl = out.find('\n', pos);
+        if (nl == std::string::npos) nl = out.size();
+        Append(names, out.substr(pos, nl - pos));
+        pos = nl + 1;
+    }
+    return names;
+}
+
 }  // namespace
 
 std::wstring ToWide(const std::string& utf8) {
@@ -652,30 +901,62 @@ std::string LowerExt(const std::string& path) {
 bool Supports(const std::string& ext) {
     if (IsTextExt(ext)) return true;
     if (ext == ".dxf" || ext == ".step" || ext == ".stp" || ext == ".obj") return true;
-    if (IsOoxmlExt(ext)) return true;     // docx/xlsx/pptx/odt...
+    if (IsOoxmlExt(ext)) return true;      // docx/xlsx/pptx/odt...
     if (ext == ".zip") return true;
-    if (ext == ".pdf") return PdfReady();  // 没 pdfium.dll 就不列进来，免得全标成抽取失败
+    // 下面这些靠外部依赖，没装就不列进来，免得全部标成“抽取失败”
+    if (ext == ".pdf") return PdfReady();
+    if (ext == ".dwg") return DwgReady();
+    if (ext == ".doc" || ext == ".ppt" || ext == ".xls") return LegacyReady();
+    if (ext == ".7z" || ext == ".rar") return ArchiveReady();
     return false;
 }
 
 bool PdfReady() { return Pdf().ok; }
+bool DwgReady() { return DwgConverter().kind >= 0; }
+bool LegacyReady() {
+    return !FindTool(L"catdoc.exe").empty() || !FindTool(L"catppt.exe").empty() ||
+           !FindTool(L"xls2csv.exe").empty() || !FindTool(L"antiword.exe").empty() ||
+           !FindSoffice().empty();
+}
+bool ArchiveReady() { return !FindArchiver(nullptr).empty(); }
+
+// 截到完整 UTF-8 字符边界：Append 按字节封顶，末尾可能剩半个字
+static std::string DecodeAndTrim(const std::string& raw) {
+    std::string u = Decode(raw);
+    size_t i = u.size();
+    while (i > 0 && ((unsigned char)u[i - 1] & 0xC0) == 0x80) --i;
+    if (i > 0) {
+        const unsigned char lead = (unsigned char)u[i - 1];
+        const size_t need = (lead >= 0xF0) ? 4 : (lead >= 0xE0) ? 3 : (lead >= 0xC0) ? 2 : 1;
+        if (u.size() - (i - 1) < need) u.resize(i - 1);
+    }
+    return u;
+}
 
 std::string Text(const std::string& path, const std::string& ext) {
-    if (ext == ".dxf") {
-        std::string t = DxfStrings(path);
-        if (!t.empty()) return t;
-        return Strings(path);          // 二进制 DXF / 加密图纸兜底
-    }
-    if (ext == ".step" || ext == ".stp") {
-        std::string t = StepStrings(path);
-        if (!t.empty()) return t;
-        return Strings(path);
-    }
-    if (ext == ".obj") return ObjStrings(path);
+    // 这些分支内部已经是 UTF-8，直接返回
     if (ext == ".pdf") return PdfText(path);
     if (IsOoxmlExt(ext)) return OoxmlText(path, ext);
     if (ext == ".zip") return ZipStrings(path);
-    return PlainText(path);
+
+    // 下面这些吐的是“原始字节”：DXF/STEP 可能是 GBK（$DWGCODEPAGE ANSI_936）
+    if (ext == ".dwg") return DecodeAndTrim(DwgText(path));
+    if (ext == ".doc" || ext == ".ppt" || ext == ".xls") return DecodeAndTrim(LegacyText(path, ext));
+    if (ext == ".7z" || ext == ".rar") return DecodeAndTrim(ArchiveText(path));
+
+    std::string raw;
+    if (ext == ".dxf") {
+        raw = DxfStrings(path);
+        if (raw.empty()) raw = Strings(path);      // 二进制 DXF / 加密图纸兜底
+    } else if (ext == ".step" || ext == ".stp") {
+        raw = StepStrings(path);
+        if (raw.empty()) raw = Strings(path);
+    } else if (ext == ".obj") {
+        raw = ObjStrings(path);
+    } else {
+        return PlainText(path);                    // 内部已做过编码探测
+    }
+    return DecodeAndTrim(raw);
 }
 
 }  // namespace extract

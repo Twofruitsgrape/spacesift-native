@@ -25,6 +25,14 @@ std::string Text(const std::string& path, const std::string& ext);
 // 没装也不影响其他格式，只是 .pdf 不参与索引。
 bool PdfReady();
 
+// 以下都靠外部命令行工具，没装对应工具就不把该扩展名列入索引：
+//   DwgReady     ← dwg2dxf.exe（LibreDWG）或 ODA File Converter
+//   LegacyReady  ← catdoc / catppt / xls2csv / antiword / LibreOffice
+//   ArchiveReady ← 7z / 7za / 7zz / UnRAR
+bool DwgReady();
+bool LegacyReady();
+bool ArchiveReady();
+
 // UTF-8 <-> 宽字符（Win32 路径用）
 std::wstring ToWide(const std::string& utf8);
 std::string  FromWide(const std::wstring& w);
