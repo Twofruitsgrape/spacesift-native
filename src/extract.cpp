@@ -1158,7 +1158,7 @@ std::string ArchiveText(const std::string& path) {
             size_t nl = out.find('\n', pos);
             if (nl == std::string::npos) nl = out.size();
             const std::string line = out.substr(pos, nl - pos);
-            if (line.compare(0, 7, "Path = ") == 0 && pos != 0) Append(names, line.substr(7));
+            if (line.compare(0, 7, "Path = ") == 0) Append(names, line.substr(7));
             pos = nl + 1;
         }
         return names;
