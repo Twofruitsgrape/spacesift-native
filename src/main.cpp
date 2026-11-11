@@ -1823,9 +1823,22 @@ static void DrawContentSearchTab() {
     prevBusy = busyNow;
 
     if (busyNow) {
+        const int total = content::g_seen.load();
+        const int done  = content::g_done.load();
+        const int fresh = content::g_parsed.load();
+        const int reused = content::g_skipped.load();
+
         ImGui::TextDisabled("正在建立内容索引…");
-        ImGui::TextDisabled("已扫描 %d 个可抽取文件 · 已写入 %d 个",
-                            content::g_seen.load(), content::g_parsed.load());
+        if (total > 0) {
+            const float frac = (float)done / (float)total;
+            // 进度条本身不写字：10px 高的条里塞文字会压到上下两行
+            ImGui::ProgressBar(frac, ImVec2(-1, 8), "");
+            ImGui::TextDisabled("%d / %d  (%.0f%%)", done, total, frac * 100.0f);
+        } else {
+            ImGui::ProgressBar(-1.0f * (float)ImGui::GetTime(), ImVec2(-1, 8), "");
+            ImGui::TextDisabled("正在清点文件…");
+        }
+        ImGui::TextDisabled("新抽取 %d 个 · 复用上次 %d 个", fresh, reused);
         std::string cur = content::CurrentPath();
         if (cur.size() > 56) cur = "…" + cur.substr(cur.size() - 55);
         if (!cur.empty()) ImGui::TextDisabled("%s", cur.c_str());
@@ -1849,8 +1862,25 @@ static void DrawContentSearchTab() {
         return;
     }
 
+    static int lastFresh = -1, lastReused = -1;
+    if (lastFresh != content::g_parsed.load() || lastReused != content::g_skipped.load()) {
+        lastFresh = content::g_parsed.load();
+        lastReused = content::g_skipped.load();
+    }
     if (g_searchQuery.empty()) {
         ImGui::TextDisabled("内容索引就绪。在上面搜索框输入关键词即可搜正文。");
+        // 解释"为什么只有这么点文件"：全盘扫描数 vs 可抽正文数
+        {
+            const int scanned = (int)g_fileCount.load();
+            const int cand = content::g_seen.load();
+            if (scanned > 0 && cand > 0)
+                ImGui::TextDisabled("扫描 %d 个文件，其中 %d 个可抽正文（其余是依赖目录/不支持格式/图片未开 OCR）",
+                                    scanned, cand);
+        }
+        ImGui::Dummy(ImVec2(0, 2));
+        ImGui::TextDisabled("语法：词A 词B（同时含）· A OR B · -排除 · ext:pdf · name:报告 · size:>10m · after:2024-06");
+        if (lastFresh > 0 || lastReused > 0)
+            ImGui::TextDisabled("本次：新抽取 %d 个，复用上次结果 %d 个。", lastFresh, lastReused);
         if (GhostButton("增量更新", ImVec2(0, 26))) StartContentIndex();
         if (!extract::PdfReady())
             ImGui::TextDisabled("提示：同目录放一个 pdfium.dll 才能搜 PDF 正文。");
@@ -2604,6 +2634,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
         if (std::string(m) == "content") g_searchMode = 1;
     }
     if (std::getenv("SPACESIFT_CONTENT")) g_pendingContent = true;
+    // 测试钩子：SPACESIFT_TAB=2 直接打开「检索结果」页签（看建索引进度用）
+    if (const char* tab = std::getenv("SPACESIFT_TAB")) g_mode = atoi(tab);
     if (std::getenv("SPACESIFT_AUTOSCAN")) StartScan(g_pathBuf);
 
     bool done = false;

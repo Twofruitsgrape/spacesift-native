@@ -268,6 +268,34 @@ int main() {
         auto hits = content::Search(dirU8, "完全不存在的词", 100);
         Check(hits.empty(), "无关词零命中");
     }
+    // 高级语法
+    {
+        auto hits = content::Search(dirU8, "ext:dxf", 50);
+        Check(!hits.empty() && Contains(hits[0].path, ".dxf"), "ext:dxf 只返回 dxf");
+    }
+    {
+        auto hits = content::Search(dirU8, "关键词丙 ext:pdf", 50);
+        Check(hits.empty(), "关键词 + ext:pdf 过滤后为空");
+    }
+    {
+        auto hits = content::Search(dirU8, "关键词丙 单行文字", 50);
+        Check(!hits.empty() && Contains(hits[0].path, "d.dxf"), "空格分隔 = AND");
+    }
+    {
+        auto hits = content::Search(dirU8, "关键词丙 -单行文字", 50);
+        Check(hits.empty(), "-词 能排除");
+    }
+    {
+        auto hits = content::Search(dirU8, "关键词甲 OR 关键词乙", 50);
+        Check(hits.size() >= 2, "OR 能取并集");
+    }
+    {
+        auto hits = content::Search(dirU8, "size:>50 ext:txt", 50);
+        bool ok = !hits.empty();
+        for (auto& h : hits) if (h.size <= 50) ok = false;
+        Check(ok, "size:>50 过滤生效");
+    }
+
     // 相关度排序：命中次数多的在前
     {
         auto hits = content::Search(dirU8, "关键词壬", 10);

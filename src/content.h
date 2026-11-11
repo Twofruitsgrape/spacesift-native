@@ -26,8 +26,10 @@ std::vector<db::Hit> Search(const std::string& root, const std::string& query, i
 void Build(const std::string& root, const std::atomic<bool>& cancel);
 
 // 进度：Build 写，UI 读
-extern std::atomic<int>  g_seen;     // 遍历到的候选文件数
-extern std::atomic<int>  g_parsed;   // 实际抽取过的文件数
+extern std::atomic<int>  g_seen;     // 遍历到的候选文件数（= 本次任务总量）
+extern std::atomic<int>  g_done;     // 已处理（含跳过）
+extern std::atomic<int>  g_parsed;   // 实际重新抽取的
+extern std::atomic<int>  g_skipped;  // 命中增量、直接复用上次结果的
 extern std::atomic<bool> g_busy;
 extern std::atomic<int>  g_files;    // 库里已有的文档数
 

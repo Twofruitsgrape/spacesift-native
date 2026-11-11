@@ -18,6 +18,9 @@
 #include "fpdfview.h"
 
 namespace extract {
+
+bool LooksLikeGarbage(const std::string& t);   // 定义在后面
+
 namespace {
 
 bool IsTextExt(const std::string& e) {
@@ -941,6 +944,9 @@ std::string PdfText(const std::string& path) {
     const int kMaxPages = 300;          // 手册类 PDF 动辄上千页，截到前 300 页
     const bool canOcr = OcrReady();
     int ocrPages = 0;
+    // 有些扫描件带一层坏 OCR 文本层：每页只有几十个字形索引字符，
+    // 单页看不出来，但整篇拼起来就能判定。判定成立后清空已抽内容、改走 OCR。
+    bool docGarbage = false;
     for (int i = 0; i < pages && i < kMaxPages && out.size() < kStoreCap; ++i) {
         FPDF_PAGE page = api.LoadPage(doc, i);
         if (!page) continue;
@@ -974,6 +980,23 @@ std::string PdfText(const std::string& path) {
             }
         }
         api.ClosePage(page);
+    }
+
+    // 第二遍：整篇抽出来发现是"字形索引当 ASCII"的坏 OCR 层，就回头 OCR 前几页。
+    // 单页只有几十个字符，逐页判断不可靠；整篇拼起来才看得出来。
+    if (canOcr && LooksLikeGarbage(out) && pages > 0) {
+        out.clear();
+        const int ocrMax = std::min(pages, 5);
+        for (int i = 0; i < ocrMax && out.size() < kStoreCap; ++i) {
+            FPDF_PAGE page = api.LoadPage(doc, i);
+            if (!page) continue;
+            std::string ocr = OcrPdfPage(api, page);
+            if (!ocr.empty()) {
+                if (ocr.size() > kStoreCap) ocr.resize(kStoreCap);
+                Append(out, ocr);
+            }
+            api.ClosePage(page);
+        }
     }
 
     api.CloseDocument(doc);
@@ -1499,6 +1522,31 @@ bool OcrAvailable() { return !FindTool(L"tesseract.exe").empty(); }
 void SetOcrEnabled(bool on) { g_ocrEnabled = on; }
 bool OcrReady() { return g_ocrEnabled && OcrAvailable(); }
 
+// 抽出来一堆 ? 或控制字符 → 说明字体映射坏了，宁可不入库也别塞垃圾
+bool LooksLikeGarbage(const std::string& t) {
+    if (t.empty()) return false;
+
+    // 信号一：连续递增的码点（强信号，几十个字符就够判断）。
+    // 扫描件常带一层坏 OCR 文本层：字体没有 ToUnicode，字形索引 0,1,2… 被当成
+    // ASCII 输出，于是出现 "!"#$%&'()*+,-./0123456789:;<=>?@ABC…" 这种递增串。
+    // 正常文字几乎不可能出现 20 个连续 +1 的字符。
+    int run = 0;
+    unsigned prev = 0;
+    for (unsigned char c : t) {
+        if (run > 0 && c == prev + 1) ++run;
+        else run = 1;
+        prev = c;
+        if (run >= 20) return true;
+    }
+
+    // 信号二：一堆 ? 或控制字符（短文本不做这个判断，误杀率高）
+    if (t.size() < 120) return false;
+    size_t bad = 0;
+    for (unsigned char c : t)
+        if (c == '?' || c < 0x09 || (c > 0x0D && c < 0x20)) ++bad;
+    return bad * 4 > t.size();
+}
+
 // 截到完整 UTF-8 字符边界：Append 按字节封顶，末尾可能剩半个字
 static std::string DecodeAndTrim(const std::string& raw) {
     std::string u = Decode(raw);
@@ -1514,7 +1562,10 @@ static std::string DecodeAndTrim(const std::string& raw) {
 
 std::string Text(const std::string& path, const std::string& ext) {
     // 这些分支内部已经是 UTF-8，直接返回
-    if (ext == ".pdf") return PdfText(path);
+    if (ext == ".pdf") {
+        std::string t = PdfText(path);
+        return LooksLikeGarbage(t) ? std::string() : t;
+    }
     if (IsOoxmlExt(ext)) return OoxmlText(path, ext);
     if (ext == ".zip") return ZipStrings(path);
 

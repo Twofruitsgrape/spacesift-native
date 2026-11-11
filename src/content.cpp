@@ -14,7 +14,9 @@
 namespace content {
 
 std::atomic<int>  g_seen{0};
+std::atomic<int>  g_done{0};
 std::atomic<int>  g_parsed{0};
+std::atomic<int>  g_skipped{0};
 std::atomic<bool> g_busy{false};
 std::atomic<int>  g_files{0};
 
@@ -41,7 +43,7 @@ bool Exec(sqlite3* db, const char* sql) {
 // 抽取器逻辑一改，旧正文就不能信了；这个值一改就整库重建。
 // OCR 开关也算在内：关着时被记为"抽空"的扫描件，开了之后必须重来一遍。
 std::string ExtractVersion() {
-    return std::string("4") + (extract::OcrReady() ? "-ocr" : "");
+    return std::string("6") + (extract::OcrReady() ? "-ocr" : "");
 }
 
 std::string MetaGet(sqlite3* db, const char* key) {
@@ -351,7 +353,9 @@ std::string LastError() {
 
 void ResetProgress() {
     g_seen = 0;
+    g_done = 0;
     g_parsed = 0;
+    g_skipped = 0;
     { std::lock_guard<std::mutex> lk(g_mutex); g_curPath.clear(); g_lastError.clear(); }
 }
 
@@ -405,11 +409,26 @@ void Build(const std::string& root, const std::atomic<bool>& cancel) {
     sqlite3_stmt* getId = nullptr;
     sqlite3_prepare_v2(db, "SELECT id FROM docs WHERE path=?", -1, &getId, nullptr);
 
+    // 第一阶段：先把候选收齐，这样界面上才有真实的总量和百分比
+    struct Cand { std::string path; uint64_t size; int64_t mtime; };
+    std::vector<Cand> cands;
+    cands.reserve(4096);
+    Walk(extract::ToWide(root), cancel, [&](const std::string& full, uint64_t size, int64_t mtime) {
+        if (cands.size() < 600000) cands.push_back({full, size, mtime});
+    });
+    g_seen = (int)cands.size();
+
+    // 第二阶段：逐个比对 + 抽取
     Exec(db, "BEGIN;");
     int sinceCommit = 0;
 
-    Walk(extract::ToWide(root), cancel,
-         [&](const std::string& full, uint64_t size, int64_t mtime) {
+    for (const Cand& c : cands) {
+        if (cancel.load()) break;
+        const std::string& full = c.path;
+        const uint64_t size = c.size;
+        const int64_t mtime = c.mtime;
+        g_done.fetch_add(1);
+        {
              // 没变就跳过：失败的也一并跳过，等文件真的变了再重试
              if (qry) {
                  sqlite3_reset(qry);
@@ -417,10 +436,13 @@ void Build(const std::string& root, const std::atomic<bool>& cancel) {
                  if (sqlite3_step(qry) == SQLITE_ROW) {
                      const int64_t oldSize = sqlite3_column_int64(qry, 0);
                      const int64_t oldM    = sqlite3_column_int64(qry, 1);
-                     if (oldSize == (int64_t)size && oldM == mtime) return;
+                     if (oldSize == (int64_t)size && oldM == mtime) {
+                         g_skipped.fetch_add(1);   // 复用上次结果
+                         continue;
+                     }
                  }
              }
-             if (cancel.load()) return;
+             if (cancel.load()) continue;
 
              const std::string ext = extract::LowerExt(full);
              std::string txt = extract::Text(full, ext);
@@ -472,7 +494,8 @@ void Build(const std::string& root, const std::atomic<bool>& cancel) {
                  Exec(db, "BEGIN;");
                  sinceCommit = 0;
              }
-         });
+        }
+    }
 
     Exec(db, "COMMIT;");
 
@@ -500,9 +523,239 @@ void Build(const std::string& root, const std::atomic<bool>& cancel) {
     g_busy = false;
 }
 
+// ============================ 查询语法 ============================
+//
+//  词A 词B              同时包含（默认 AND）
+//  "完整短语"           短语匹配
+//  词A OR 词B           任一包含
+//  -词C                 排除
+//  ext:pdf              只看某类扩展名（可写 ext:pdf,docx）
+//  name:报告            文件名里包含
+//  size:>10m            大于 10 MB（支持 k/m/g，也支持 < 和 =）
+//  after:2024-06        修改时间在 2024-06 之后
+//
+// 只有过滤器没有关键词时（如 ext:pdf size:>10m），按大小列出文件。
+
+struct ParsedQuery {
+    std::vector<std::string> terms;      // AND
+    std::vector<std::string> orTerms;    // OR
+    std::vector<std::string> notTerms;   // NOT
+    std::vector<std::string> exts;
+    std::string nameLike;
+    bool    hasSize = false;
+    char    sizeOp = '>';
+    int64_t sizeVal = 0;
+    bool    hasAfter = false;
+    int64_t after = 0;
+
+    bool HasFilters() const {
+        return !exts.empty() || !nameLike.empty() || hasSize || hasAfter;
+    }
+    bool Empty() const {
+        return terms.empty() && orTerms.empty() && notTerms.empty() && !HasFilters();
+    }
+};
+
+std::string LowerStr(std::string s) {
+    for (auto& c : s) c = (char)tolower((unsigned char)c);
+    return s;
+}
+
+bool StartsWithStr(const std::string& s, const char* p) {
+    const size_t n = strlen(p);
+    return s.size() >= n && s.compare(0, n, p) == 0;
+}
+
+int64_t ParseSizeStr(const std::string& v) {
+    if (v.empty()) return 0;
+    char* end = nullptr;
+    double d = strtod(v.c_str(), &end);
+    if (end == v.c_str()) return 0;
+    if (*end) {
+        const char u = (char)tolower((unsigned char)*end);
+        if (u == 'k') d *= 1024.0;
+        else if (u == 'm') d *= 1024.0 * 1024.0;
+        else if (u == 'g') d *= 1024.0 * 1024.0 * 1024.0;
+    }
+    return (int64_t)d;
+}
+
+// YYYY / YYYY-MM / YYYY-MM-DD → Unix 秒
+int64_t ParseDateStr(const std::string& v) {
+    int y = 0, mo = 1, d = 1;
+    if (sscanf(v.c_str(), "%d-%d-%d", &y, &mo, &d) < 1) return 0;
+    struct tm tmv;
+    memset(&tmv, 0, sizeof tmv);
+    tmv.tm_year = y - 1900;
+    tmv.tm_mon = mo - 1;
+    tmv.tm_mday = d;
+    return (int64_t)mktime(&tmv);
+}
+
+// 把查询切成词，保留引号内的空格
+std::vector<std::string> SplitQuery(const std::string& q) {
+    std::vector<std::string> out;
+    std::string cur;
+    bool inQuote = false;
+    for (char c : q) {
+        if (c == '"') { inQuote = !inQuote; cur.push_back(c); continue; }
+        if (!inQuote && (c == ' ' || c == '\t')) {
+            if (!cur.empty()) { out.push_back(cur); cur.clear(); }
+            continue;
+        }
+        cur.push_back(c);
+    }
+    if (!cur.empty()) out.push_back(cur);
+    return out;
+}
+
+ParsedQuery ParseQuery(const std::string& q) {
+    ParsedQuery p;
+    bool nextOr = false;
+    for (std::string tok : SplitQuery(q)) {
+        if (tok.empty()) continue;
+        if (tok == "OR" || tok == "or" || tok == "|") {
+            // "A OR B"：A 也要从 AND 组挪到 OR 组，否则会变成 A AND B
+            if (!p.terms.empty()) {
+                p.orTerms.push_back(p.terms.back());
+                p.terms.pop_back();
+            }
+            nextOr = true;
+            continue;
+        }
+
+        if (StartsWithStr(tok, "ext:") || StartsWithStr(tok, "EXT:")) {
+            const std::string v = tok.substr(4);
+            size_t start = 0;
+            while (start <= v.size()) {
+                size_t comma = v.find(',', start);
+                if (comma == std::string::npos) comma = v.size();
+                std::string one = LowerStr(v.substr(start, comma - start));
+                while (!one.empty() && one[0] == '.') one.erase(one.begin());
+                if (!one.empty()) p.exts.push_back("." + one);
+                start = comma + 1;
+            }
+            continue;
+        }
+        if (StartsWithStr(tok, "name:") || StartsWithStr(tok, "NAME:")) {
+            p.nameLike = tok.substr(5);
+            continue;
+        }
+        if (StartsWithStr(tok, "size:") || StartsWithStr(tok, "SIZE:")) {
+            std::string v = tok.substr(5);
+            if (!v.empty() && (v[0] == '>' || v[0] == '<' || v[0] == '=')) {
+                p.sizeOp = v[0];
+                v = v.substr(1);
+            }
+            p.sizeVal = ParseSizeStr(v);
+            p.hasSize = p.sizeVal > 0;
+            continue;
+        }
+        if (StartsWithStr(tok, "after:") || StartsWithStr(tok, "AFTER:")) {
+            p.after = ParseDateStr(tok.substr(6));
+            p.hasAfter = p.after > 0;
+            continue;
+        }
+
+        bool neg = false;
+        if (tok.size() > 1 && tok[0] == '-') { neg = true; tok = tok.substr(1); }
+        if (tok.size() >= 2 && tok.front() == '"' && tok.back() == '"')
+            tok = tok.substr(1, tok.size() - 2);
+        if (tok.empty()) continue;
+
+        if (neg) p.notTerms.push_back(tok);
+        else if (nextOr) { p.orTerms.push_back(tok); nextOr = false; }
+        else p.terms.push_back(tok);
+    }
+    return p;
+}
+
+// 单个词 → FTS5 片段：CJK 出 bigram 短语，拉丁出整词
+std::string TermToFts(const std::string& q) {
+    std::string out;
+    std::vector<unsigned> run;
+
+    auto flush = [&] {
+        if (run.size() >= 2) {
+            std::string ph;
+            for (size_t k = 0; k + 1 < run.size(); ++k) {
+                if (!ph.empty()) ph.push_back(' ');
+                PutCp(ph, run[k]);
+                PutCp(ph, run[k + 1]);
+            }
+            if (!out.empty()) out += " AND ";
+            out += "\"";
+            out += ph;
+            out += "\"";
+        } else if (run.size() == 1) {
+            if (!out.empty()) out += " AND ";
+            PutCp(out, run[0]);
+        }
+        run.clear();
+    };
+
+    for (size_t i = 0; i < q.size();) {
+        const unsigned char c = (unsigned char)q[i];
+        if (c < 0x80) {
+            flush();
+            if (isalnum(c)) {
+                std::string w;
+                while (i < q.size() && (unsigned char)q[i] < 0x80 &&
+                       (isalnum((unsigned char)q[i]) || q[i] == '_')) {
+                    w.push_back((char)tolower((unsigned char)q[i]));
+                    ++i;
+                }
+                if (!out.empty()) out += " AND ";
+                out += w;
+                continue;
+            }
+            ++i;
+            continue;
+        }
+        unsigned cp = 0;
+        const size_t ni = NextCp(q, i, cp);
+        if (IsCjk(cp)) run.push_back(cp);
+        else flush();
+        i = ni;
+    }
+    flush();
+    return out;
+}
+
+std::string BuildMatch(const ParsedQuery& p) {
+    std::string andPart, orPart, notPart;
+    for (const auto& t : p.terms) {
+        const std::string f = TermToFts(t);
+        if (f.empty()) continue;
+        if (!andPart.empty()) andPart += " AND ";
+        andPart += "(" + f + ")";
+    }
+    for (const auto& t : p.orTerms) {
+        const std::string f = TermToFts(t);
+        if (f.empty()) continue;
+        if (!orPart.empty()) orPart += " OR ";
+        orPart += "(" + f + ")";
+    }
+    for (const auto& t : p.notTerms) {
+        const std::string f = TermToFts(t);
+        if (f.empty()) continue;
+        if (!notPart.empty()) notPart += " OR ";
+        notPart += "(" + f + ")";
+    }
+
+    std::string m;
+    if (!andPart.empty()) m = "(" + andPart + ")";
+    if (!orPart.empty()) m += (m.empty() ? "" : " AND ") + std::string("(") + orPart + ")";
+    if (!m.empty() && !notPart.empty()) m += " NOT (" + notPart + ")";
+    return m;
+}
+
 std::vector<db::Hit> Search(const std::string& root, const std::string& query, int limit) {
     std::vector<db::Hit> out;
     if (query.empty() || !HasIndex(root)) return out;
+
+    const ParsedQuery pq = ParseQuery(query);
+    if (pq.Empty()) return out;
 
     const std::string dbPath = DbPathFor(root);
     sqlite3* db = nullptr;
@@ -512,18 +765,26 @@ std::vector<db::Hit> Search(const std::string& root, const std::string& query, i
     }
     sqlite3_exec(db, "PRAGMA cache_size=-16384;", nullptr, nullptr, nullptr);
 
-    const std::string match = FtsQuery(query);
+    std::string filterSql;
+    if (!pq.exts.empty()) {
+        filterSql += " AND d.ext IN (";
+        for (size_t i = 0; i < pq.exts.size(); ++i) filterSql += (i ? ",?" : "?");
+        filterSql += ")";
+    }
+    if (!pq.nameLike.empty()) filterSql += " AND d.name LIKE ? ESCAPE '\\'";
+    if (pq.hasSize) filterSql += std::string(" AND d.size ") + pq.sizeOp + " ?";
+    if (pq.hasAfter) filterSql += " AND d.mtime >= ?";
 
-    // 1) 有可用 MATCH 表达式 → 走倒排索引，再用“命中次数 / 文档长度”排序
-    //
-    // 不用 bm25()：实测这个 SQLite 组合下（3.45 + 外部内容表 + 文件库）
-    // bm25()/rank 一律返回 NULL，而内存库正常，原因未定位。
-    // 与其用个会静默失效的排序，不如自己算一个能验证的分数。
+    const std::string match = BuildMatch(pq);
+    sqlite3_stmt* st = nullptr;
+
     if (!match.empty()) {
-        const char* sql =
+        std::string sql =
             "WITH cand AS ("
             "  SELECT d.id AS id, d.tlen AS tlen FROM docs_fts CROSS JOIN docs d "
-            "    ON d.id = docs_fts.rowid WHERE docs_fts MATCH ?2 "
+            "    ON d.id = docs_fts.rowid WHERE docs_fts MATCH ?2";
+        sql += filterSql;
+        sql +=
             "  ORDER BY d.tlen ASC LIMIT 2000"
             ")"
             "SELECT d.path, d.name, d.size, "
@@ -532,55 +793,102 @@ std::vector<db::Hit> Search(const std::string& root, const std::string& query, i
             "         / max(1, length(?1)) AS hits "
             "FROM cand JOIN docs d ON d.id = cand.id "
             "ORDER BY hits DESC, d.tlen ASC LIMIT ?3";
-        sqlite3_stmt* st = nullptr;
-        if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) == SQLITE_OK) {
-            sqlite3_bind_text(st, 1, query.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_text(st, 2, match.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_int(st, 3, limit);
+
+        if (sqlite3_prepare_v2(db, sql.c_str(), -1, &st, nullptr) == SQLITE_OK) {
+            int idx = 1;
+            const std::string rawTerm = !pq.terms.empty() ? pq.terms[0]
+                                      : (!pq.orTerms.empty() ? pq.orTerms[0] : query);
+            sqlite3_bind_text(st, idx++, rawTerm.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(st, idx++, match.c_str(), -1, SQLITE_TRANSIENT);
+            for (const auto& e : pq.exts)
+                sqlite3_bind_text(st, idx++, e.c_str(), -1, SQLITE_TRANSIENT);
+            if (!pq.nameLike.empty()) {
+                const std::string pat = "%" + LikeEscape(pq.nameLike) + "%";
+                sqlite3_bind_text(st, idx++, pat.c_str(), -1, SQLITE_TRANSIENT);
+            }
+            if (pq.hasSize) sqlite3_bind_int64(st, idx++, (sqlite3_int64)pq.sizeVal);
+            if (pq.hasAfter) sqlite3_bind_int64(st, idx++, (sqlite3_int64)pq.after);
+            sqlite3_bind_int(st, idx++, limit);
+
             while (sqlite3_step(st) == SQLITE_ROW) {
                 db::Hit h;
-                const unsigned char* p = sqlite3_column_text(st, 0);
-                const unsigned char* n = sqlite3_column_text(st, 1);
-                const unsigned char* s = sqlite3_column_text(st, 3);
-                h.path = p ? (const char*)p : "";
-                h.name = n ? (const char*)n : "";
+                const unsigned char* p0 = sqlite3_column_text(st, 0);
+                const unsigned char* p1 = sqlite3_column_text(st, 1);
+                const unsigned char* p3 = sqlite3_column_text(st, 3);
+                h.path = p0 ? (const char*)p0 : "";
+                h.name = p1 ? (const char*)p1 : "";
                 h.size = (uint64_t)sqlite3_column_int64(st, 2);
-                h.snippet = Flatten(s ? (const char*)s : "", 90);
+                h.snippet = Flatten(p3 ? (const char*)p3 : "", 90);
                 h.content = true;
                 out.push_back(std::move(h));
             }
             sqlite3_finalize(st);
         }
-        if (!out.empty()) {
-            sqlite3_close(db);
-            return out;
-        }
+        if (!out.empty()) { sqlite3_close(db); return out; }
     }
 
-    // 2) 兜底：单字查询 / MATCH 不可用 → 全表 LIKE
-    const char* sql2 =
-        "SELECT path,name,size,"
-        "       substr(text, max(1, instr(lower(text), lower(?1)) - 40), 220) "
-        "FROM docs WHERE text LIKE ?2 ESCAPE '\\' ORDER BY mtime DESC LIMIT ?3";
-    sqlite3_stmt* st = nullptr;
-    if (sqlite3_prepare_v2(db, sql2, -1, &st, nullptr) == SQLITE_OK) {
-        const std::string pat = "%" + LikeEscape(query) + "%";
-        sqlite3_bind_text(st, 1, query.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(st, 2, pat.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int(st, 3, limit);
-        while (sqlite3_step(st) == SQLITE_ROW) {
-            db::Hit h;
-            const unsigned char* p = sqlite3_column_text(st, 0);
-            const unsigned char* n = sqlite3_column_text(st, 1);
-            const unsigned char* s = sqlite3_column_text(st, 3);
-            h.path = p ? (const char*)p : "";
-            h.name = n ? (const char*)n : "";
-            h.size = (uint64_t)sqlite3_column_int64(st, 2);
-            h.snippet = Flatten(s ? (const char*)s : "", 90);
-            h.content = true;
-            out.push_back(std::move(h));
+    // 只有过滤器（如 ext:pdf size:>10m）：直接按大小列
+    if (match.empty() && pq.HasFilters()) {
+        std::string sql =
+            "SELECT d.path, d.name, d.size, '' FROM docs d WHERE 1=1";
+        sql += filterSql;
+        sql += " ORDER BY d.size DESC LIMIT ?";
+
+        if (sqlite3_prepare_v2(db, sql.c_str(), -1, &st, nullptr) == SQLITE_OK) {
+            int idx = 1;
+            for (const auto& e : pq.exts)
+                sqlite3_bind_text(st, idx++, e.c_str(), -1, SQLITE_TRANSIENT);
+            if (!pq.nameLike.empty()) {
+                const std::string pat = "%" + LikeEscape(pq.nameLike) + "%";
+                sqlite3_bind_text(st, idx++, pat.c_str(), -1, SQLITE_TRANSIENT);
+            }
+            if (pq.hasSize) sqlite3_bind_int64(st, idx++, (sqlite3_int64)pq.sizeVal);
+            if (pq.hasAfter) sqlite3_bind_int64(st, idx++, (sqlite3_int64)pq.after);
+            sqlite3_bind_int(st, idx++, limit);
+
+            while (sqlite3_step(st) == SQLITE_ROW) {
+                db::Hit h;
+                const unsigned char* p0 = sqlite3_column_text(st, 0);
+                const unsigned char* p1 = sqlite3_column_text(st, 1);
+                const unsigned char* p3 = sqlite3_column_text(st, 3);
+                h.path = p0 ? (const char*)p0 : "";
+                h.name = p1 ? (const char*)p1 : "";
+                h.size = (uint64_t)sqlite3_column_int64(st, 2);
+                h.snippet = Flatten(p3 ? (const char*)p3 : "", 90);
+                h.content = true;
+                out.push_back(std::move(h));
+            }
+            sqlite3_finalize(st);
         }
-        sqlite3_finalize(st);
+        sqlite3_close(db);
+        return out;
+    }
+
+    // 兜底：单字查询 / MATCH 不可用 → 全表 LIKE
+    {
+        const char* sql2 =
+            "SELECT path,name,size,"
+            "       substr(text, max(1, instr(lower(text), lower(?1)) - 40), 220) "
+            "FROM docs WHERE text LIKE ?2 ESCAPE '\\' ORDER BY mtime DESC LIMIT ?3";
+        if (sqlite3_prepare_v2(db, sql2, -1, &st, nullptr) == SQLITE_OK) {
+            const std::string pat = "%" + LikeEscape(query) + "%";
+            sqlite3_bind_text(st, 1, query.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(st, 2, pat.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int(st, 3, limit);
+            while (sqlite3_step(st) == SQLITE_ROW) {
+                db::Hit h;
+                const unsigned char* p0 = sqlite3_column_text(st, 0);
+                const unsigned char* p1 = sqlite3_column_text(st, 1);
+                const unsigned char* p3 = sqlite3_column_text(st, 3);
+                h.path = p0 ? (const char*)p0 : "";
+                h.name = p1 ? (const char*)p1 : "";
+                h.size = (uint64_t)sqlite3_column_int64(st, 2);
+                h.snippet = Flatten(p3 ? (const char*)p3 : "", 90);
+                h.content = true;
+                out.push_back(std::move(h));
+            }
+            sqlite3_finalize(st);
+        }
     }
     sqlite3_close(db);
     return out;
