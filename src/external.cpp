@@ -99,9 +99,11 @@ std::wstring TempName(const wchar_t* suffix) {
     const DWORD n = GetTempPathW(MAX_PATH, dir);
     if (n == 0) return std::wstring();
     wchar_t name[96];
-    swprintf(name, 96, L"spacesift_%lu_%llu%s",
+    // 不要用 %llu：MinGW 的 MSVCRT 不认 ll 长度修饰符；
+    // 宽字符串必须用 %ls，MSVCRT 的 %s 指的是 char*
+    swprintf(name, 96, L"spacesift_%lu_%lu%ls",
              (unsigned long)GetCurrentProcessId(),
-             (unsigned long long)GetTickCount64(), suffix);
+             (unsigned long)(GetTickCount64() & 0xFFFFFFFFull), suffix);
     return std::wstring(dir, n) + name;
 }
 

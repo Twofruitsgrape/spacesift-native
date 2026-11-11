@@ -1868,7 +1868,7 @@ static void DrawContentSearchTab() {
         ImGui::TextDisabled("没有文件内容匹配「%s」。", g_searchQuery.c_str());
         return;
     }
-    ImGui::TextDisabled("内容命中 %d 项（按修改时间排序，勾选可加入待清理）", (int)g_hits.size());
+    ImGui::TextDisabled("内容命中 %d 项（按相关度排序，勾选可加入待清理）", (int)g_hits.size());
     for (auto& hit : g_hits) {
         bool was = g_hitSelected.count(hit.path) > 0;
         bool now = was;

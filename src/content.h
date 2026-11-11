@@ -18,7 +18,8 @@ namespace content {
 std::string DbPathFor(const std::string& root);
 bool HasIndex(const std::string& root);
 
-// P1 用 LIKE 子串匹配：对中文天然正确，不需要分词，也就不用开 FTS5。
+// FTS5 倒排索引 + CJK bigram 分词；排序用「命中次数/文档长度」（bm25 在本环境不可靠）。
+// 单字查询或 MATCH 不可用时退回 LIKE 全表扫描。
 std::vector<db::Hit> Search(const std::string& root, const std::string& query, int limit);
 
 // 后台线程跑。cancel 置位即尽快退出（已写入的部分保留）。

@@ -165,6 +165,11 @@ int main() {
     // 7) P3：PDF 文本层
     WriteBytes(dir + L"\\r.pdf", MakePdf("Hello PDF Keyword Omega"));
 
+    // 8) 排序：同样命中，出现次数多的应该排前面
+    WriteBytes(dir + L"\\rank_a.txt", "关键词壬 填充填充填充填充填充填充填充填充填充填充");
+    WriteBytes(dir + L"\\rank_b.txt",
+               "关键词壬 关键词壬 关键词壬 填充填充填充填充填充填充填充填充填充填充");
+
     std::string dirU8 = extract::FromWide(dir);
     printf("\n--- 抽取结果 ---\n");
     struct { const char* f; const char* must; } cases[] = {
@@ -237,6 +242,13 @@ int main() {
     {
         auto hits = content::Search(dirU8, "完全不存在的词", 100);
         Check(hits.empty(), "无关词零命中");
+    }
+    // 相关度排序：命中次数多的在前
+    {
+        auto hits = content::Search(dirU8, "关键词壬", 10);
+        Check(!hits.empty() && Contains(hits[0].path, "rank_b"),
+              "排序：出现 3 次的 rank_b 排在只出现 1 次的 rank_a 前面");
+        if (hits.size() >= 2) printf("      前两名: %s / %s\n", hits[0].name.c_str(), hits[1].name.c_str());
     }
     // 增量：第二次应跳过全部
     content::ResetProgress();

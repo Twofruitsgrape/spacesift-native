@@ -3,8 +3,10 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <cctype>
 #include <functional>
 #include <mutex>
+#include <vector>
 
 #include "extract.h"
 #include "sqlite3.h"
@@ -37,7 +39,7 @@ bool Exec(sqlite3* db, const char* sql) {
 }
 
 // 抽取器逻辑一改，旧正文就不能信了；这个值一改就整库重建
-const char* kExtractVersion = "2";
+const char* kExtractVersion = "4";
 
 std::string MetaGet(sqlite3* db, const char* key) {
     std::string out;
@@ -73,7 +75,154 @@ int64_t FtToUnix(const FILETIME& ft) {
     return (int64_t)((u.QuadPart - epoch) / 10000000ULL);
 }
 
-// LIKE 里的 % _ \ 要转义，否则用户搜 "100%" 会变成通配
+// ============================ 分词 ============================
+//
+// 为什么不用 jieba：FTS5 默认的 unicode61 会把一整串中文当成一个 token，
+// "合同"永远搜不到；trigram 分词器又要求查询 ≥3 字，中文最常见的 2 字词直接失效。
+// 这里自己做 **CJK bigram**：把"法兰盘"索引成 `法兰 兰盘`，查询时用短语
+// `"法兰 兰盘"` 匹配 —— 等价于子串匹配，而且 BM25 有真实词频可用。
+
+bool IsCjk(unsigned cp) {
+    return (cp >= 0x3400 && cp <= 0x4DBF) ||   // 扩展 A
+           (cp >= 0x4E00 && cp <= 0x9FFF) ||   // 基本汉字
+           (cp >= 0xF900 && cp <= 0xFAFF) ||   // 兼容汉字
+           (cp >= 0x3040 && cp <= 0x30FF) ||   // 日文假名
+           (cp >= 0xAC00 && cp <= 0xD7AF);     // 韩文
+}
+
+// 解一个 UTF-8 码点，返回下一个位置
+size_t NextCp(const std::string& s, size_t i, unsigned& cp) {
+    const unsigned char c = (unsigned char)s[i];
+    if (c < 0x80) { cp = c; return i + 1; }
+    size_t n = ((c & 0xE0) == 0xC0) ? 2 : ((c & 0xF0) == 0xE0) ? 3 : ((c & 0xF8) == 0xF0) ? 4 : 0;
+    if (n == 0 || i + n > s.size()) { cp = 0xFFFD; return i + 1; }
+    cp = c & ((1u << (8 - (unsigned)n - 1)) - 1);
+    for (size_t k = 1; k < n; ++k) {
+        const unsigned char cc = (unsigned char)s[i + k];
+        if ((cc & 0xC0) != 0x80) { cp = 0xFFFD; return i + 1; }
+        cp = (cp << 6) | (cc & 0x3F);
+    }
+    return i + n;
+}
+
+void PutCp(std::string& o, unsigned cp) {
+    if (cp < 0x80) {
+        o.push_back((char)cp);
+    } else if (cp < 0x800) {
+        o.push_back((char)(0xC0 | (cp >> 6)));
+        o.push_back((char)(0x80 | (cp & 0x3F)));
+    } else if (cp < 0x10000) {
+        o.push_back((char)(0xE0 | (cp >> 12)));
+        o.push_back((char)(0x80 | ((cp >> 6) & 0x3F)));
+        o.push_back((char)(0x80 | (cp & 0x3F)));
+    } else {
+        o.push_back((char)(0xF0 | (cp >> 18)));
+        o.push_back((char)(0x80 | ((cp >> 12) & 0x3F)));
+        o.push_back((char)(0x80 | ((cp >> 6) & 0x3F)));
+        o.push_back((char)(0x80 | (cp & 0x3F)));
+    }
+}
+
+// 正文 → 索引 token 流（CJK bigram + 拉丁整词）
+std::string FtsTokens(const std::string& text) {
+    std::string o;
+    o.reserve(text.size() + text.size() / 2);
+    std::vector<unsigned> run;
+
+    auto flush = [&] {
+        for (size_t k = 0; k + 1 < run.size(); ++k) {
+            PutCp(o, run[k]);
+            PutCp(o, run[k + 1]);
+            o.push_back(' ');
+        }
+        if (run.size() == 1) {          // 孤字单独存一份，单字查询才能命中
+            PutCp(o, run[0]);
+            o.push_back(' ');
+        }
+        run.clear();
+    };
+
+    size_t i = 0;
+    while (i < text.size()) {
+        const unsigned char c = (unsigned char)text[i];
+        if (c < 0x80) {
+            flush();
+            if (isalnum(c)) {
+                while (i < text.size() && (unsigned char)text[i] < 0x80 &&
+                       (isalnum((unsigned char)text[i]) || text[i] == '_')) {
+                    o.push_back((char)tolower((unsigned char)text[i]));
+                    ++i;
+                }
+                o.push_back(' ');
+                continue;
+            }
+            ++i;
+            continue;
+        }
+        unsigned cp = 0;
+        const size_t ni = NextCp(text, i, cp);
+        if (IsCjk(cp)) run.push_back(cp);
+        else flush();
+        i = ni;
+    }
+    flush();
+    return o;
+}
+
+// 查询 → FTS5 MATCH 表达式；返回空表示"交给 LIKE 兜底"
+std::string FtsQuery(const std::string& q) {
+    std::string out;
+    std::vector<unsigned> run;
+
+    auto flush = [&] {
+        if (run.size() >= 2) {
+            std::string ph;
+            for (size_t k = 0; k + 1 < run.size(); ++k) {
+                if (!ph.empty()) ph.push_back(' ');
+                PutCp(ph, run[k]);
+                PutCp(ph, run[k + 1]);
+            }
+            if (!out.empty()) out += " AND ";
+            out += "\"";
+            out += ph;
+            out += "\"";
+        } else if (run.size() == 1) {
+            if (!out.empty()) out += " AND ";
+            PutCp(out, run[0]);          // 索引里只有单字成 run 时才存在
+        }
+        run.clear();
+    };
+
+    size_t i = 0;
+    while (i < q.size()) {
+        const unsigned char c = (unsigned char)q[i];
+        if (c < 0x80) {
+            flush();
+            if (isalnum(c)) {
+                std::string w;
+                while (i < q.size() && (unsigned char)q[i] < 0x80 &&
+                       (isalnum((unsigned char)q[i]) || q[i] == '_')) {
+                    w.push_back((char)tolower((unsigned char)q[i]));
+                    ++i;
+                }
+                if (!out.empty()) out += " AND ";
+                out += w;
+                continue;
+            }
+            ++i;
+            continue;
+        }
+        unsigned cp = 0;
+        const size_t ni = NextCp(q, i, cp);
+        if (IsCjk(cp)) run.push_back(cp);
+        else flush();
+        i = ni;
+    }
+    flush();
+    return out;
+}
+
+// LIKE 里的 % _ \ 要转义
 std::string LikeEscape(const std::string& s) {
     std::string o;
     o.reserve(s.size() + 4);
@@ -91,14 +240,13 @@ std::string Flatten(const std::string& s, size_t maxChars) {
     bool space = false;
     int chars = 0;
     for (size_t i = 0; i < s.size() && chars < (int)maxChars; ++i) {
-        unsigned char c = (unsigned char)s[i];
+        const unsigned char c = (unsigned char)s[i];
         if (c == '\r' || c == '\n' || c == '\t' || c == ' ') {
             space = !o.empty();
             continue;
         }
         if (space) { o.push_back(' '); space = false; ++chars; }
         o.push_back((char)c);
-        // UTF-8 续字节不算字符数
         if ((c & 0xC0) != 0x80) ++chars;
     }
     if ((size_t)chars >= maxChars && !s.empty()) o += "…";
@@ -154,7 +302,7 @@ void Walk(const std::wstring& dir, const std::atomic<bool>& cancel, const FileFn
             continue;
         }
 
-        uint64_t size = ((uint64_t)fd.nFileSizeHigh << 32) | (uint64_t)fd.nFileSizeLow;
+        const uint64_t size = ((uint64_t)fd.nFileSizeHigh << 32) | (uint64_t)fd.nFileSizeLow;
         if (size == 0 || size > extract::kSkipAbove) continue;
 
         std::string u8 = extract::FromWide(full);
@@ -181,7 +329,7 @@ std::string DbPathFor(const std::string& root) {
 
 bool HasIndex(const std::string& root) {
     std::wstring w = extract::ToWide(DbPathFor(root));
-    DWORD a = GetFileAttributesW(w.c_str());
+    const DWORD a = GetFileAttributesW(w.c_str());
     return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY);
 }
 
@@ -217,23 +365,38 @@ void Build(const std::string& root, const std::atomic<bool>& cancel) {
     Exec(db, "PRAGMA journal_mode=WAL;");
     Exec(db, "PRAGMA synchronous=NORMAL;");
     Exec(db, "PRAGMA cache_size=-32768;");
-    Exec(db,
-         "CREATE TABLE IF NOT EXISTS docs(path TEXT PRIMARY KEY,name TEXT,size INTEGER,"
-         "mtime INTEGER,ext TEXT,text TEXT,err INTEGER DEFAULT 0);");
     Exec(db, "CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT);");
 
-    // 抽取逻辑升级过（比如修了 STEP 的 \X2\ 转义）→ 旧正文全部作废重建
+    // 抽取器或索引结构升级 → 旧正文全部作废重建
     if (MetaGet(db, "extract_version") != kExtractVersion) {
-        Exec(db, "DELETE FROM docs;");
+        Exec(db, "DROP TABLE IF EXISTS docs_fts;");
+        Exec(db, "DROP TABLE IF EXISTS docs;");
         MetaPut(db, "extract_version", kExtractVersion);
     }
 
+    Exec(db,
+         "CREATE TABLE IF NOT EXISTS docs(id INTEGER PRIMARY KEY,path TEXT NOT NULL UNIQUE,"
+         "name TEXT,size INTEGER,mtime INTEGER,ext TEXT,text TEXT,err INTEGER DEFAULT 0,"
+         "tlen INTEGER DEFAULT 0);");
+    // 外部内容表：索引里放分词后的 token，snippet() 取 docs.text 的原文
+    Exec(db, "CREATE VIRTUAL TABLE IF NOT EXISTS docs_fts USING fts5("
+             "text, content='docs', content_rowid='id');");
+
     sqlite3_stmt* qry = nullptr;
-    sqlite3_stmt* ins = nullptr;
+    sqlite3_stmt* ups = nullptr;
+    sqlite3_stmt* ftsDel = nullptr;
+    sqlite3_stmt* ftsIns = nullptr;
     sqlite3_prepare_v2(db, "SELECT size,mtime FROM docs WHERE path=?", -1, &qry, nullptr);
     sqlite3_prepare_v2(db,
-        "INSERT OR REPLACE INTO docs(path,name,size,mtime,ext,text,err) "
-        "VALUES(?,?,?,?,?,?,?)", -1, &ins, nullptr);
+        "INSERT INTO docs(path,name,size,mtime,ext,text,err,tlen) VALUES(?,?,?,?,?,?,?,?) "
+        "ON CONFLICT(path) DO UPDATE SET name=excluded.name,size=excluded.size,"
+        "mtime=excluded.mtime,ext=excluded.ext,text=excluded.text,err=excluded.err,"
+        "tlen=excluded.tlen",
+        -1, &ups, nullptr);
+    sqlite3_prepare_v2(db, "DELETE FROM docs_fts WHERE rowid=?", -1, &ftsDel, nullptr);
+    sqlite3_prepare_v2(db, "INSERT INTO docs_fts(rowid,text) VALUES(?,?)", -1, &ftsIns, nullptr);
+    sqlite3_stmt* getId = nullptr;
+    sqlite3_prepare_v2(db, "SELECT id FROM docs WHERE path=?", -1, &getId, nullptr);
 
     Exec(db, "BEGIN;");
     int sinceCommit = 0;
@@ -244,10 +407,9 @@ void Build(const std::string& root, const std::atomic<bool>& cancel) {
              if (qry) {
                  sqlite3_reset(qry);
                  sqlite3_bind_text(qry, 1, full.c_str(), -1, SQLITE_TRANSIENT);
-                 bool found = sqlite3_step(qry) == SQLITE_ROW;
-                 if (found) {
-                     int64_t oldSize = sqlite3_column_int64(qry, 0);
-                     int64_t oldM    = sqlite3_column_int64(qry, 1);
+                 if (sqlite3_step(qry) == SQLITE_ROW) {
+                     const int64_t oldSize = sqlite3_column_int64(qry, 0);
+                     const int64_t oldM    = sqlite3_column_int64(qry, 1);
                      if (oldSize == (int64_t)size && oldM == mtime) return;
                  }
              }
@@ -256,20 +418,44 @@ void Build(const std::string& root, const std::atomic<bool>& cancel) {
              const std::string ext = extract::LowerExt(full);
              std::string txt = extract::Text(full, ext);
              const int err = txt.empty() ? 1 : 0;
+             // token 数当“文档长度”：排序时短文档命中更可信
+             const std::string tokens = err ? std::string() : FtsTokens(txt);
+             int64_t tlen = 0;
+             for (char c : tokens) if (c == ' ') ++tlen;
 
-             size_t slash = full.find_last_of('\\');
-             std::string name = (slash == std::string::npos) ? full : full.substr(slash + 1);
+             const size_t slash = full.find_last_of('\\');
+             const std::string name = (slash == std::string::npos) ? full : full.substr(slash + 1);
 
-             if (ins) {
-                 sqlite3_reset(ins);
-                 sqlite3_bind_text(ins, 1, full.c_str(), -1, SQLITE_TRANSIENT);
-                 sqlite3_bind_text(ins, 2, name.c_str(), -1, SQLITE_TRANSIENT);
-                 sqlite3_bind_int64(ins, 3, (sqlite3_int64)size);
-                 sqlite3_bind_int64(ins, 4, (sqlite3_int64)mtime);
-                 sqlite3_bind_text(ins, 5, ext.c_str(), -1, SQLITE_TRANSIENT);
-                 sqlite3_bind_text(ins, 6, txt.c_str(), (int)txt.size(), SQLITE_TRANSIENT);
-                 sqlite3_bind_int(ins, 7, err);
-                 sqlite3_step(ins);
+             if (ups) {
+                 sqlite3_reset(ups);
+                 sqlite3_bind_text(ups, 1, full.c_str(), -1, SQLITE_TRANSIENT);
+                 sqlite3_bind_text(ups, 2, name.c_str(), -1, SQLITE_TRANSIENT);
+                 sqlite3_bind_int64(ups, 3, (sqlite3_int64)size);
+                 sqlite3_bind_int64(ups, 4, (sqlite3_int64)mtime);
+                 sqlite3_bind_text(ups, 5, ext.c_str(), -1, SQLITE_TRANSIENT);
+                 sqlite3_bind_text(ups, 6, txt.c_str(), (int)txt.size(), SQLITE_TRANSIENT);
+                 sqlite3_bind_int(ups, 7, err);
+                 sqlite3_bind_int64(ups, 8, (sqlite3_int64)tlen);
+                 sqlite3_step(ups);
+             }
+
+             // 同步倒排索引
+             if (getId && ftsDel && ftsIns) {
+                 sqlite3_reset(getId);
+                 sqlite3_bind_text(getId, 1, full.c_str(), -1, SQLITE_TRANSIENT);
+                 if (sqlite3_step(getId) == SQLITE_ROW) {
+                     const sqlite3_int64 id = sqlite3_column_int64(getId, 0);
+                     sqlite3_reset(ftsDel);
+                     sqlite3_bind_int64(ftsDel, 1, id);
+                     sqlite3_step(ftsDel);
+                     if (err == 0) {
+                         sqlite3_reset(ftsIns);
+                         sqlite3_bind_int64(ftsIns, 1, id);
+                         sqlite3_bind_text(ftsIns, 2, tokens.c_str(), (int)tokens.size(),
+                                           SQLITE_TRANSIENT);
+                         sqlite3_step(ftsIns);
+                     }
+                 }
              }
              g_parsed.fetch_add(1);
 
@@ -283,29 +469,17 @@ void Build(const std::string& root, const std::atomic<bool>& cancel) {
 
     Exec(db, "COMMIT;");
 
-    // 写 meta：记录完成时间和文档数，方便以后判新旧
-    {
-        sqlite3_stmt* st = nullptr;
-        if (sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO meta(key,value) VALUES(?,?)",
-                               -1, &st, nullptr) == SQLITE_OK) {
-            auto put = [&](const char* k, const std::string& v) {
-                sqlite3_reset(st);
-                sqlite3_bind_text(st, 1, k, -1, SQLITE_STATIC);
-                sqlite3_bind_text(st, 2, v.c_str(), -1, SQLITE_TRANSIENT);
-                sqlite3_step(st);
-            };
-            put("root", root);
-            put("built_at", std::to_string((long long)time(nullptr)));
-            put("partial", cancel.load() ? "1" : "0");
-            put("version", "1");
-            put("extract_version", kExtractVersion);
-            sqlite3_finalize(st);
-        }
-    }
-    if (qry) sqlite3_finalize(qry);
-    if (ins) sqlite3_finalize(ins);
+    MetaPut(db, "root", root);
+    MetaPut(db, "built_at", std::to_string((long long)time(nullptr)));
+    MetaPut(db, "partial", cancel.load() ? "1" : "0");
+    MetaPut(db, "version", "2");
 
-    // 顺手数一下总量
+    if (qry) sqlite3_finalize(qry);
+    if (ups) sqlite3_finalize(ups);
+    if (ftsDel) sqlite3_finalize(ftsDel);
+    if (ftsIns) sqlite3_finalize(ftsIns);
+    if (getId) sqlite3_finalize(getId);
+
     {
         sqlite3_stmt* st = nullptr;
         if (sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM docs WHERE err=0", -1, &st, nullptr) == SQLITE_OK) {
@@ -330,15 +504,59 @@ std::vector<db::Hit> Search(const std::string& root, const std::string& query, i
     }
     sqlite3_exec(db, "PRAGMA cache_size=-16384;", nullptr, nullptr, nullptr);
 
-    // instr 找不到返回 0，max(1, 0-40) = 1，于是退回从正文开头截一段，不会空着
-    const char* sql =
+    const std::string match = FtsQuery(query);
+
+    // 1) 有可用 MATCH 表达式 → 走倒排索引，再用“命中次数 / 文档长度”排序
+    //
+    // 不用 bm25()：实测这个 SQLite 组合下（3.45 + 外部内容表 + 文件库）
+    // bm25()/rank 一律返回 NULL，而内存库正常，原因未定位。
+    // 与其用个会静默失效的排序，不如自己算一个能验证的分数。
+    if (!match.empty()) {
+        const char* sql =
+            "WITH cand AS ("
+            "  SELECT d.id AS id, d.tlen AS tlen FROM docs_fts CROSS JOIN docs d "
+            "    ON d.id = docs_fts.rowid WHERE docs_fts MATCH ?2 "
+            "  ORDER BY d.tlen ASC LIMIT 2000"
+            ")"
+            "SELECT d.path, d.name, d.size, "
+            "       substr(d.text, max(1, instr(lower(d.text), lower(?1)) - 40), 220), "
+            "       (length(d.text) - length(replace(lower(d.text), lower(?1), ''))) "
+            "         / max(1, length(?1)) AS hits "
+            "FROM cand JOIN docs d ON d.id = cand.id "
+            "ORDER BY hits DESC, d.tlen ASC LIMIT ?3";
+        sqlite3_stmt* st = nullptr;
+        if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) == SQLITE_OK) {
+            sqlite3_bind_text(st, 1, query.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(st, 2, match.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int(st, 3, limit);
+            while (sqlite3_step(st) == SQLITE_ROW) {
+                db::Hit h;
+                const unsigned char* p = sqlite3_column_text(st, 0);
+                const unsigned char* n = sqlite3_column_text(st, 1);
+                const unsigned char* s = sqlite3_column_text(st, 3);
+                h.path = p ? (const char*)p : "";
+                h.name = n ? (const char*)n : "";
+                h.size = (uint64_t)sqlite3_column_int64(st, 2);
+                h.snippet = Flatten(s ? (const char*)s : "", 90);
+                h.content = true;
+                out.push_back(std::move(h));
+            }
+            sqlite3_finalize(st);
+        }
+        if (!out.empty()) {
+            sqlite3_close(db);
+            return out;
+        }
+    }
+
+    // 2) 兜底：单字查询 / MATCH 不可用 → 全表 LIKE
+    const char* sql2 =
         "SELECT path,name,size,"
         "       substr(text, max(1, instr(lower(text), lower(?1)) - 40), 220) "
         "FROM docs WHERE text LIKE ?2 ESCAPE '\\' ORDER BY mtime DESC LIMIT ?3";
-
     sqlite3_stmt* st = nullptr;
-    if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) == SQLITE_OK) {
-        std::string pat = "%" + LikeEscape(query) + "%";
+    if (sqlite3_prepare_v2(db, sql2, -1, &st, nullptr) == SQLITE_OK) {
+        const std::string pat = "%" + LikeEscape(query) + "%";
         sqlite3_bind_text(st, 1, query.c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_text(st, 2, pat.c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_int(st, 3, limit);

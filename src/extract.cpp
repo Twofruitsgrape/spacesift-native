@@ -591,6 +591,15 @@ struct PdfApi {
     decltype(&FPDFText_ClosePage) TextClose = nullptr;
     decltype(&FPDFText_CountChars) TextCount = nullptr;
     decltype(&FPDFText_GetText) TextGet = nullptr;
+    // 扫描件 OCR 用的渲染接口
+    decltype(&FPDF_GetPageWidthF) PageWidth = nullptr;
+    decltype(&FPDF_GetPageHeightF) PageHeight = nullptr;
+    decltype(&FPDFBitmap_Create) BitmapCreate = nullptr;
+    decltype(&FPDFBitmap_FillRect) BitmapFill = nullptr;
+    decltype(&FPDFBitmap_GetBuffer) BitmapBuffer = nullptr;
+    decltype(&FPDFBitmap_GetStride) BitmapStride = nullptr;
+    decltype(&FPDFBitmap_Destroy) BitmapDestroy = nullptr;
+    decltype(&FPDF_RenderPageBitmap) RenderPage = nullptr;
 };
 
 // 只在首次用到 PDF 时加载一次；InitLibrary 会装字体，不能每个文件重来
@@ -613,6 +622,14 @@ PdfApi& Pdf() {
     api.TextClose     = (decltype(api.TextClose))sym("FPDFText_ClosePage");
     api.TextCount     = (decltype(api.TextCount))sym("FPDFText_CountChars");
     api.TextGet       = (decltype(api.TextGet))sym("FPDFText_GetText");
+    api.PageWidth     = (decltype(api.PageWidth))sym("FPDF_GetPageWidthF");
+    api.PageHeight    = (decltype(api.PageHeight))sym("FPDF_GetPageHeightF");
+    api.BitmapCreate  = (decltype(api.BitmapCreate))sym("FPDFBitmap_Create");
+    api.BitmapFill    = (decltype(api.BitmapFill))sym("FPDFBitmap_FillRect");
+    api.BitmapBuffer  = (decltype(api.BitmapBuffer))sym("FPDFBitmap_GetBuffer");
+    api.BitmapStride  = (decltype(api.BitmapStride))sym("FPDFBitmap_GetStride");
+    api.BitmapDestroy = (decltype(api.BitmapDestroy))sym("FPDFBitmap_Destroy");
+    api.RenderPage    = (decltype(api.RenderPage))sym("FPDF_RenderPageBitmap");
 
     api.ok = api.InitLibrary && api.LoadCustom && api.CloseDocument && api.GetPageCount &&
              api.LoadPage && api.ClosePage && api.TextLoad && api.TextClose &&
@@ -621,8 +638,7 @@ PdfApi& Pdf() {
     return api;
 }
 
-int PdfGetBlock(void* param, unsigned long position, unsigned char* buf, unsigned long size) {
-    HANDLE h = (HANDLE)param;
+int PdfGetBlock(void* param, unsigned long position, unsigned char* buf, unsigned long size) {    HANDLE h = (HANDLE)param;
     LARGE_INTEGER li;
     li.QuadPart = (LONGLONG)position;
     if (!SetFilePointerEx(h, li, nullptr, FILE_BEGIN)) return 0;
@@ -631,7 +647,95 @@ int PdfGetBlock(void* param, unsigned long position, unsigned char* buf, unsigne
     return (int)got;
 }
 
-// 只抽文本层。扫描件（纯图）拿不到文字，返回空串。
+std::string OcrText(const std::string& path);   // 定义在后面的 OCR 那段
+
+// BGRA/BGRx 位图 → 24 位 BMP（自下而上，行 4 字节对齐）
+bool WriteBmp(const std::wstring& path, const unsigned char* buf, int w, int h, int stride) {
+    const int rowBytes = ((w * 3) + 3) & ~3;
+    const uint32_t imgSize = (uint32_t)rowBytes * (uint32_t)h;
+    HANDLE f = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return false;
+
+    unsigned char hdr[54] = {0};
+    auto put16 = [&](int o, unsigned v) {
+        hdr[o] = (unsigned char)v;
+        hdr[o + 1] = (unsigned char)(v >> 8);
+    };
+    auto put32 = [&](int o, unsigned v) {
+        for (int i = 0; i < 4; ++i) hdr[o + i] = (unsigned char)(v >> (8 * i));
+    };
+    hdr[0] = 'B'; hdr[1] = 'M';
+    put32(2, 54 + imgSize);
+    put32(10, 54);
+    put32(14, 40);
+    put32(18, (unsigned)w);
+    put32(22, (unsigned)h);
+    put16(26, 1);
+    put16(28, 24);
+    put32(34, imgSize);
+    put32(38, 2835);
+    put32(42, 2835);
+
+    DWORD wr = 0;
+    WriteFile(f, hdr, 54, &wr, nullptr);
+    std::vector<unsigned char> row((size_t)rowBytes, 0);
+    for (int y = h - 1; y >= 0; --y) {
+        const unsigned char* src = buf + (size_t)y * (size_t)stride;
+        for (int x = 0; x < w; ++x) {
+            row[x * 3 + 0] = src[x * 4 + 0];
+            row[x * 3 + 1] = src[x * 4 + 1];
+            row[x * 3 + 2] = src[x * 4 + 2];
+        }
+        WriteFile(f, row.data(), (DWORD)rowBytes, &wr, nullptr);
+    }
+    CloseHandle(f);
+    return true;
+}
+
+// 渲染一页成图，交给 tesseract。扫描件 PDF 只有这条路能拿到文字。
+std::string OcrPdfPage(PdfApi& api, FPDF_PAGE page) {
+    const bool dbg = std::getenv("SPACESIFT_KEEP_OCR_BMP") != nullptr;
+    if (!api.PageWidth || !api.PageHeight || !api.BitmapCreate || !api.RenderPage ||
+        !api.BitmapBuffer || !api.BitmapStride || !api.BitmapDestroy) {
+        if (dbg) fprintf(stderr, "[ocr] symbols missing\n");
+        return {};
+    }
+
+    const float wPt = api.PageWidth(page);
+    const float hPt = api.PageHeight(page);
+    if (wPt <= 1.0f || hPt <= 1.0f) return {};
+
+    float scale = 1600.0f / wPt;      // 大约 150–200 DPI，OCR 够用
+    if (scale < 1.0f) scale = 1.0f;
+    if (scale > 3.0f) scale = 3.0f;
+    const int w = (int)(wPt * scale);
+    const int h = (int)(hPt * scale);
+    if (dbg) fprintf(stderr, "[ocr] page %.1fx%.1fpt -> %dx%d px\n", wPt, hPt, w, h);
+    if (w <= 0 || h <= 0 || w > 6000 || h > 6000) return {};
+
+    FPDF_BITMAP bmp = api.BitmapCreate(w, h, 0);   // 0 = BGRA
+    if (!bmp) { if (dbg) fprintf(stderr, "[ocr] bitmap create failed\n"); return {}; }
+    api.BitmapFill(bmp, 0, 0, w, h, 0xFFFFFFFF);
+    api.RenderPage(bmp, page, 0, 0, w, h, 0, 0);
+
+    const unsigned char* buf = (const unsigned char*)api.BitmapBuffer(bmp);
+    const int stride = api.BitmapStride(bmp);
+    std::string text;
+    if (buf && stride > 0) {
+        const std::wstring bmpPath = external::TempName(L".bmp");
+        if (!bmpPath.empty() && WriteBmp(bmpPath, buf, w, h, stride)) {
+            if (dbg) fprintf(stderr, "[ocr] wrote %ls\n", bmpPath.c_str());
+            text = OcrText(FromWide(bmpPath));
+            // 调试：SPACESIFT_KEEP_OCR_BMP=1 保留位图，方便看渲染对不对
+            if (!std::getenv("SPACESIFT_KEEP_OCR_BMP")) external::DeleteQuiet(bmpPath);
+        }
+    }
+    api.BitmapDestroy(bmp);
+    return text;
+}
+
+// 只抽文本层。扫描件（纯图）没文本层时，渲染后走 OCR。
 std::string PdfText(const std::string& path) {
     PdfApi& api = Pdf();
     if (!api.ok) return {};
@@ -663,12 +767,16 @@ std::string PdfText(const std::string& path) {
     std::string out;
     const int pages = api.GetPageCount(doc);
     const int kMaxPages = 300;          // 手册类 PDF 动辄上千页，截到前 300 页
+    const bool canOcr = OcrReady();
+    int ocrPages = 0;
     for (int i = 0; i < pages && i < kMaxPages && out.size() < kStoreCap; ++i) {
         FPDF_PAGE page = api.LoadPage(doc, i);
         if (!page) continue;
+
+        int n = 0;
         FPDF_TEXTPAGE tp = api.TextLoad(page);
         if (tp) {
-            const int n = api.TextCount(tp);
+            n = api.TextCount(tp);
             if (n > 0) {
                 std::vector<unsigned short> buf((size_t)n + 1, 0);
                 const int got = api.TextGet(tp, 0, n + 1, buf.data());   // 返回值含结尾 0
@@ -680,6 +788,18 @@ std::string PdfText(const std::string& path) {
                 }
             }
             api.TextClose(tp);
+        }
+
+        // 文本层为空 → 当扫描件处理。一篇文章最多 OCR 前 5 页，别让索引变慢动作
+        const bool debugRender = std::getenv("SPACESIFT_KEEP_OCR_BMP") != nullptr;
+        if (debugRender) fprintf(stderr, "[ocr] page %d textchars=%d canOcr=%d\n", i, n, (int)canOcr);
+        if (n <= 2 && (canOcr || debugRender) && ocrPages < 5 && out.size() < kStoreCap) {
+            std::string ocr = OcrPdfPage(api, page);
+            if (!ocr.empty()) {
+                ++ocrPages;
+                if (ocr.size() > kStoreCap) ocr.resize(kStoreCap);
+                Append(out, ocr);
+            }
         }
         api.ClosePage(page);
     }

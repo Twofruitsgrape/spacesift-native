@@ -8,14 +8,16 @@ if errorlevel 1 exit /b 1
 
 if not exist build mkdir build
 
-if not exist build\sqlite3.o (
-  echo [1/3] 编译 SQLite...
-  gcc -O2 -c third_party/sqlite/sqlite-amalgamation-3450000/sqlite3.c -o build\sqlite3.o ^
+REM 文件名留 fts5 后缀：带不带 FTS5 是两套二进制，避免旧目标文件被误用
+if not exist build\sqlite3_fts5.o (
+  echo [1/3] 编译 SQLite（含 FTS5）...
+  gcc -O2 -c third_party/sqlite/sqlite-amalgamation-3450000/sqlite3.c -o build\sqlite3_fts5.o ^
+    -DSQLITE_ENABLE_FTS5 ^
     -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_THREADSAFE=1 -DSQLITE_DEFAULT_MEMSTATUS=0 ^
     -DSQLITE_OMIT_DEPRECATED -DSQLITE_DQS=0 -DSQLITE_OMIT_EXPLAIN
   if errorlevel 1 exit /b 1
 ) else (
-  echo [1/3] 复用已有的 build\sqlite3.o
+  echo [1/3] 复用已有的 build\sqlite3_fts5.o
 )
 
 if not exist build\miniz_zip.o (
@@ -37,7 +39,7 @@ g++ -O2 -std=c++17 -static -s -mwindows ^
   -I third_party/sqlite/sqlite-amalgamation-3450000 -I third_party/miniz ^
   -I third_party/pdfium/include -I src ^
   src/main.cpp src/db.cpp src/rules.cpp src/extract.cpp src/content.cpp src/external.cpp ^
-  build\sqlite3.o build\miniz.o build\miniz_tdef.o build\miniz_tinfl.o build\miniz_zip.o ^
+  build\sqlite3_fts5.o build\miniz.o build\miniz_tdef.o build\miniz_tinfl.o build\miniz_zip.o ^
   build\app_res.o ^
   third_party/imgui/imgui.cpp third_party/imgui/imgui_draw.cpp ^
   third_party/imgui/imgui_tables.cpp third_party/imgui/imgui_widgets.cpp ^
