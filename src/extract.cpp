@@ -931,6 +931,28 @@ std::wstring FindTool(const wchar_t* name) {
         const std::wstring q = dir + rel + name;
         if (external::FileExists(q)) return q;
     }
+    // 常见安装位置：装完但 PATH 没刷新也能找到
+    wchar_t win[MAX_PATH];
+    const DWORD n = GetWindowsDirectoryW(win, MAX_PATH);
+    if (n >= 2) {
+        const std::wstring drive(win, 2);
+        const std::wstring cands[] = {
+            drive + L"\\Program Files\\Tesseract-OCR\\" + name,
+            drive + L"\\Program Files (x86)\\Tesseract-OCR\\" + name,
+            drive + L"\\Program Files\\7-Zip\\" + name,
+            drive + L"\\Program Files (x86)\\7-Zip\\" + name,
+            drive + L"\\Program Files\\WinRAR\\" + name,
+        };
+        for (const auto& c : cands)
+            if (external::FileExists(c)) return c;
+    }
+    return {};
+}
+
+// 如果 exe 旁边有 tessdata 目录，就用它（用户可以免管理员装语言包）
+std::wstring TessdataArgs() {
+    const std::wstring dir = external::ExeDir() + L"\\tessdata";
+    if (external::DirExists(dir)) return L"--tessdata-dir \"" + dir + L"\" ";
     return {};
 }
 
@@ -975,23 +997,23 @@ std::string SofficeText(const std::wstring& soffice, const std::string& path) {
 std::string LegacyText(const std::string& path, const std::string& ext) {
     const std::wstring src = ToWide(path);
     std::string out;
+    DWORD code = 1;
+    // 工具失败时错误信息会进 stdout/stderr，必须看退出码，否则会把错误当成正文
+    auto tryRun = [&](const wchar_t* tool, const std::wstring& args) -> bool {
+        const std::wstring exe = FindTool(tool);
+        if (exe.empty()) return false;
+        out.clear();
+        return external::RunCapture(exe, args, out, kStoreCap, 60000, &code) && code == 0;
+    };
 
-    // catdoc 系优先：启动快，直接吐 stdout，秒级
+    // catdoc 系优先：启动快，直接吐 stdout
     if (ext == ".doc") {
-        const std::wstring t = FindTool(L"catdoc.exe");
-        if (!t.empty() && external::RunCapture(t, L"-d utf-8 \"" + src + L"\"", out, kStoreCap, 30000))
-            return out;
-        const std::wstring a = FindTool(L"antiword.exe");
-        if (!a.empty() && external::RunCapture(a, L"-m UTF-8.txt \"" + src + L"\"", out, kStoreCap, 30000))
-            return out;
+        if (tryRun(L"catdoc.exe", L"-d utf-8 \"" + src + L"\"")) return out;
+        if (tryRun(L"antiword.exe", L"-m UTF-8.txt \"" + src + L"\"")) return out;
     } else if (ext == ".ppt") {
-        const std::wstring t = FindTool(L"catppt.exe");
-        if (!t.empty() && external::RunCapture(t, L"-d utf-8 \"" + src + L"\"", out, kStoreCap, 30000))
-            return out;
+        if (tryRun(L"catppt.exe", L"-d utf-8 \"" + src + L"\"")) return out;
     } else if (ext == ".xls") {
-        const std::wstring t = FindTool(L"xls2csv.exe");
-        if (!t.empty() && external::RunCapture(t, L"-d utf-8 \"" + src + L"\"", out, kStoreCap, 30000))
-            return out;
+        if (tryRun(L"xls2csv.exe", L"-d utf-8 \"" + src + L"\"")) return out;
     }
 
     // 兜底 LibreOffice（慢：每个文件都要起一次 soffice）
@@ -1022,9 +1044,11 @@ std::string ArchiveText(const std::string& path) {
     if (exe.empty()) return {};
 
     std::string out;
+    DWORD code = 1;
     if (kind == L"7z") {
         if (!external::RunCapture(exe, L"l -ba -slt -- \"" + ToWide(path) + L"\"", out,
-                                  kStoreCap, 60000))
+                                  kStoreCap, 60000, &code) ||
+            code != 0)
             return {};
         std::string names;
         size_t pos = 0;
@@ -1038,7 +1062,8 @@ std::string ArchiveText(const std::string& path) {
         return names;
     }
     // UnRAR lb：一行一个文件名
-    if (!external::RunCapture(exe, L"lb \"" + ToWide(path) + L"\"", out, kStoreCap, 60000))
+    if (!external::RunCapture(exe, L"lb \"" + ToWide(path) + L"\"", out, kStoreCap, 60000, &code) ||
+        code != 0)
         return {};
     std::string names;
     size_t pos = 0;
@@ -1057,14 +1082,20 @@ std::string OcrText(const std::string& path) {
     const std::wstring exe = FindTool(L"tesseract.exe");
     if (exe.empty()) return {};
     const std::wstring src = ToWide(path);
+    const std::wstring pre = TessdataArgs();
     std::string out;
-    // 先试中英双语包；机器上没装 chi_sim 会失败，退回默认英文
-    if (external::RunCapture(exe, L"\"" + src + L"\" stdout -l chi_sim+eng", out,
-                             kStoreCap, 120000))
+    DWORD code = 1;
+    // 中文文档用 chi_sim 单独识别比 chi_sim+eng 好得多：
+    // 带 eng 时中文会被当英文认（实测“李工”变“SL”、“张工”变“KL”）。
+    // 先试 chi_sim，拿不到东西再退回默认（英文）。
+    if (external::RunCapture(exe, pre + L"\"" + src + L"\" stdout -l chi_sim", out,
+                             kStoreCap, 120000, &code) && code == 0 && out.size() >= 8)
         return out;
     out.clear();
-    external::RunCapture(exe, L"\"" + src + L"\" stdout", out, kStoreCap, 120000);
-    return out;
+    if (external::RunCapture(exe, pre + L"\"" + src + L"\" stdout", out, kStoreCap, 120000, &code) &&
+        code == 0)
+        return out;
+    return {};
 }
 
 }  // namespace

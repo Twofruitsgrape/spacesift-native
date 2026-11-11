@@ -23,9 +23,12 @@ bool ReadFileBytes(const std::wstring& path, std::string& out, size_t cap = 256 
 bool DeleteQuiet(const std::wstring& path);
 bool RemoveDirQuiet(const std::wstring& path);
 
-// 跑进程并把 stdout+stderr 收回到 out（≤ cap 字节）
+// 跑进程并把 stdout+stderr 收回到 out（≤ cap 字节）。
+// exitCode 非空时回写退出码 —— 工具失败时 stderr 也会被收进 out，
+// 不看退出码就会把错误信息当正文入库。
 bool RunCapture(const std::wstring& exe, const std::wstring& args, std::string& out,
-                size_t cap = 256 * 1024, DWORD timeoutMs = 60000);
+                size_t cap = 256 * 1024, DWORD timeoutMs = 60000,
+                DWORD* exitCode = nullptr);
 
 // 跑进程，丢掉输出
 bool RunSilent(const std::wstring& exe, const std::wstring& args, DWORD timeoutMs = 60000);

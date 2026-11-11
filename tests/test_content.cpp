@@ -96,6 +96,8 @@ int main() {
     } else {
         printf("[SKIP] 未找到 DWG 转换器，跳过 DWG 用例\n");
     }
+    Check(extract::Supports(".png") == extract::OcrReady(), ".png/.jpg 随 tesseract 可用性启用");
+    if (extract::OcrReady()) printf("[INFO] tesseract 已就位，扫描件/截图 OCR 可用\n");
     Check(extract::LowerExt("C:\\A\\B.STEP") == ".step", "扩展名转小写");
 
     // 造一个测试目录

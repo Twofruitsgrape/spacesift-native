@@ -30,3 +30,7 @@ third_party/libredwg/
 third_party/openswx/
 third_party/pugixml/
 third_party/zlibshim/
+
+# 语言包体积大，按需自行放到 build/tessdata（或随 dist 发布）
+build/tessdata/
+dist/tessdata/

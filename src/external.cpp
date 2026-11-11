@@ -18,7 +18,7 @@ std::wstring BuildCmd(const std::wstring& exe, const std::wstring& args) {
 
 // captureFile 非空时把 stdout/stderr 都重定向进去
 bool Spawn(const std::wstring& exe, const std::wstring& args,
-           const std::wstring& captureFile, DWORD timeoutMs) {
+           const std::wstring& captureFile, DWORD timeoutMs, DWORD* exitCode) {
     if (!FileExists(exe)) return false;
 
     const std::wstring cmd = BuildCmd(exe, args);
@@ -34,6 +34,7 @@ bool Spawn(const std::wstring& exe, const std::wstring& args,
     bool capturing = !captureFile.empty();
     HANDLE cap = INVALID_HANDLE_VALUE;
     HANDLE nul = INVALID_HANDLE_VALUE;
+    HANDLE nulW = INVALID_HANDLE_VALUE;
 
     if (capturing) {
         SECURITY_ATTRIBUTES sa;
@@ -46,9 +47,13 @@ bool Spawn(const std::wstring& exe, const std::wstring& args,
         if (cap != INVALID_HANDLE_VALUE) {
             nul = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa,
                               OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+            // stderr 单独引到 NUL：tesseract/catdoc 会往 stderr 写进度与错误，
+            // 和 stdout 混在一起会把“Estimating resolution as 481”当正文入库
+            nulW = CreateFileW(L"NUL", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa,
+                               OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
             si.dwFlags |= STARTF_USESTDHANDLES;
             si.hStdOutput = cap;
-            si.hStdError = cap;
+            si.hStdError = (nulW != INVALID_HANDLE_VALUE) ? nulW : cap;
             si.hStdInput = nul;
         } else {
             capturing = false;
@@ -62,6 +67,7 @@ bool Spawn(const std::wstring& exe, const std::wstring& args,
                                    nullptr, nullptr, &si, &pi);
     if (cap != INVALID_HANDLE_VALUE) CloseHandle(cap);
     if (nul != INVALID_HANDLE_VALUE) CloseHandle(nul);
+    if (nulW != INVALID_HANDLE_VALUE) CloseHandle(nulW);
     if (!ok) return false;
 
     const DWORD wait = WaitForSingleObject(pi.hProcess, timeoutMs);
@@ -71,6 +77,7 @@ bool Spawn(const std::wstring& exe, const std::wstring& args,
     GetExitCodeProcess(pi.hProcess, &code);
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
+    if (exitCode) *exitCode = code;
 
     // 有些工具转换成功但退出码非 0（只报 warning），只要等到进程结束就算跑过
     return wait == WAIT_OBJECT_0;
@@ -139,18 +146,18 @@ bool DeleteQuiet(const std::wstring& path) { return DeleteFileW(path.c_str()) !=
 bool RemoveDirQuiet(const std::wstring& path) { return RemoveDirectoryW(path.c_str()) != 0; }
 
 bool RunCapture(const std::wstring& exe, const std::wstring& args, std::string& out,
-                size_t cap, DWORD timeoutMs) {
+                size_t cap, DWORD timeoutMs, DWORD* exitCode) {
     out.clear();
     const std::wstring tmp = TempName(L".out");
     if (tmp.empty()) return false;
-    const bool ran = Spawn(exe, args, tmp, timeoutMs);
+    const bool ran = Spawn(exe, args, tmp, timeoutMs, exitCode);
     ReadFileBytes(tmp, out, cap);
     DeleteQuiet(tmp);
     return ran && !out.empty();
 }
 
 bool RunSilent(const std::wstring& exe, const std::wstring& args, DWORD timeoutMs) {
-    return Spawn(exe, args, std::wstring(), timeoutMs);
+    return Spawn(exe, args, std::wstring(), timeoutMs, nullptr);
 }
 
 }  // namespace external
