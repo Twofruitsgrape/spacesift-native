@@ -4,9 +4,12 @@
 
 #include <cstdio>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "content.h"
 #include "extract.h"
+#include "miniz.h"
 #include "sqlite3.h"
 
 static int g_fail = 0;
@@ -79,6 +82,32 @@ int main() {
     // 5) OBJ：只有命名行有意义
     WriteBytes(dir + L"\\o.obj", "# comment 关键词丁\ng 支架组\nv 1.0 2.0 3.0\nusemtl 材料A\n");
 
+    // 6) P2：OOXML 与压缩包
+    auto makeZip = [](const std::vector<std::pair<std::string, std::string>>& entries) {
+        mz_zip_archive w;
+        memset(&w, 0, sizeof w);
+        std::string out;
+        if (!mz_zip_writer_init_heap(&w, 0, 0)) return out;
+        for (auto& e : entries)
+            mz_zip_writer_add_mem(&w, e.first.c_str(), e.second.data(), e.second.size(),
+                                  MZ_BEST_COMPRESSION);
+        void* buf = nullptr;
+        size_t sz = 0;
+        if (mz_zip_writer_finalize_heap_archive(&w, &buf, &sz) && buf)
+            out.assign((const char*)buf, sz);
+        mz_zip_writer_end(&w);
+        return out;
+    };
+    WriteBytes(dir + L"\\c.docx", makeZip({{"word/document.xml",
+        "<?xml version=\"1.0\"?><w:document><w:body><w:p><w:r><w:t>合同正文关键词戊</w:t></w:r>"
+        "<w:r><w:t>&#x4E2D;&amp;</w:t></w:r></w:p></w:body></w:document>"}}));
+    WriteBytes(dir + L"\\s.xlsx", makeZip({{"xl/sharedStrings.xml",
+        "<sst><si><t>物料清单关键词己</t></si></sst>"}}));
+    WriteBytes(dir + L"\\s.pptx", makeZip({{"ppt/slides/slide1.xml",
+        "<p:sld><a:t>汇报要点关键词庚</a:t></p:sld>"}}));
+    WriteBytes(dir + L"\\a.zip", makeZip({{"内层说明.md", "压缩包内文本关键词辛"},
+                                         {"sub/inner.docx", ""}}));
+
     std::string dirU8 = extract::FromWide(dir);
     printf("\n--- 抽取结果 ---\n");
     struct { const char* f; const char* must; } cases[] = {
@@ -90,6 +119,12 @@ int main() {
         {"\\p.step",   "法兰盘"},
         {"\\p.step",   "装配总成"},
         {"\\o.obj",    "支架组"},
+        {"\\c.docx",   "关键词戊"},
+        {"\\c.docx",   "中&"},              // 实体解码 \u0026#x4E2D; 和 &amp;
+        {"\\s.xlsx",   "关键词己"},
+        {"\\s.pptx",   "关键词庚"},
+        {"\\a.zip",    "内层说明.md"},      // 压缩包条目名
+        {"\\a.zip",    "压缩包内文本关键词辛"},   // 压缩包内文本文件
     };
     for (auto& c : cases) {
         std::string p = dirU8 + c.f;
@@ -111,7 +146,7 @@ int main() {
     content::Build(dirU8, cancel);
     printf("已扫描 %d · 已写入 %d\n", content::g_seen.load(), content::g_parsed.load());
     Check(content::HasIndex(dirU8), "索引库已生成");
-    Check(content::g_parsed.load() >= 5, "至少写入 5 个文件");
+    Check(content::g_parsed.load() >= 9, "至少写入 9 个文件");
 
     struct { const char* q; const char* wantName; } queries[] = {
         {"关键词甲", "utf8.txt"},
@@ -120,6 +155,10 @@ int main() {
         {"法兰盘3寸", "d.dxf"},     // 属性块里的值
         {"装配总成", "p.step"},     // FILE_NAME
         {"支架组", "o.obj"},
+        {"关键词戊", "c.docx"},     // OOXML 正文
+        {"关键词己", "s.xlsx"},     // sharedStrings
+        {"关键词庚", "s.pptx"},     // slide
+        {"压缩包内文本关键词辛", "a.zip"},   // zip 内文本
     };
     for (auto& q : queries) {
         auto hits = content::Search(dirU8, q.q, 100);

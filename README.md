@@ -11,9 +11,11 @@
 - **深度清理** — 列出当前目录的全部子项，可勾选加入待清理
 - **检索结果** — 两种模式：**文件名**（扫描时同步建索引，338 万条约 0.4 秒出结果）和 **内容**（搜文件正文，见下）
 - **内容检索** — 搜文件内部文字，结果带命中片段，可勾选进批量清理
-  - 覆盖：文本/代码（`txt md csv log json xml yml ini html` 等 60+ 后缀，自动识别 UTF-8/GBK/UTF-16）
+  - 文本/代码：`txt md csv tsv log json xml yml yaml ini html css` 等 60+ 后缀，自动识别 UTF-8 / GBK / UTF-16
+  - Office：`docx docm xlsx xlsm pptx pptm odt ods odp`（直接读 OOXML，不需要装 Office）
   - 图纸：`dxf`（抓 TEXT/MTEXT/ATTRIB 属性块，不吞坐标）
   - 三维：`step stp`（只抓单引号里的零件名/文件名）、`iges igs`、`obj`
+  - 压缩包：`zip` 的条目名 + 里面的文本/Office 文件（解压总量上限 4 MB）
   - 索引独立成库 `content_<root>.db`，按文件大小+修改时间增量更新，不重复抽取
 - **二次确认** — 任何删除都先弹窗列出清单，确认后才执行，不进回收站
 - **安全边界** — 只处理扫描范围内的路径，系统受保护目录一律跳过
@@ -61,6 +63,13 @@ Windows 10 1803+ / Windows 11，64 位。依赖系统自带的 DirectX 11 与 UC
 ## 从源码构建
 
 需要 MinGW-w64（`g++`、`gcc`、`windres` 在 PATH 中）。
+没有的话三种任选一种：
+
+```bat
+setx W64DEVKIT_DIR "C:\path\to\w64devkit"      :: 方式一：环境变量
+:: 方式二：在 build.bat 同目录建 toolchain.txt，写工具链根目录（一行）
+:: 方式三：把 MinGW 的 bin 直接加进 PATH
+```
 
 ```bat
 build.bat

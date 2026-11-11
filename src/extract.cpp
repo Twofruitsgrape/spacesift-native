@@ -6,6 +6,8 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "miniz.h"
+
 namespace extract {
 namespace {
 
@@ -299,6 +301,205 @@ std::string PlainText(const std::string& path) {
     return u8;
 }
 
+// ======================= P2：OOXML / 压缩包 =======================
+
+bool ReadAll(const std::string& path, uint64_t cap, std::string& out) {
+    std::wstring w = ToWide(path);
+    HANDLE h = CreateFileW(w.c_str(), GENERIC_READ,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                           nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    LARGE_INTEGER sz;
+    if (!GetFileSizeEx(h, &sz) || sz.QuadPart <= 0 || (uint64_t)sz.QuadPart > cap) {
+        CloseHandle(h);
+        return false;
+    }
+    out.assign((size_t)sz.QuadPart, '\0');
+    size_t off = 0;
+    while (off < out.size()) {
+        DWORD want = (DWORD)std::min<size_t>(out.size() - off, 1u << 20);
+        DWORD got = 0;
+        if (!ReadFile(h, &out[off], want, &got, nullptr) || got == 0) break;
+        off += got;
+    }
+    CloseHandle(h);
+    out.resize(off);
+    return !out.empty();
+}
+
+void AppendCodepoint(std::string& buf, unsigned long cp) {
+    if (cp < 0x80) {
+        buf.push_back((char)cp);
+    } else if (cp < 0x800) {
+        buf.push_back((char)(0xC0 | (cp >> 6)));
+        buf.push_back((char)(0x80 | (cp & 0x3F)));
+    } else if (cp < 0x10000) {
+        buf.push_back((char)(0xE0 | (cp >> 12)));
+        buf.push_back((char)(0x80 | ((cp >> 6) & 0x3F)));
+        buf.push_back((char)(0x80 | (cp & 0x3F)));
+    } else {
+        buf.push_back((char)(0xF0 | (cp >> 18)));
+        buf.push_back((char)(0x80 | ((cp >> 12) & 0x3F)));
+        buf.push_back((char)(0x80 | ((cp >> 6) & 0x3F)));
+        buf.push_back((char)(0x80 | (cp & 0x3F)));
+    }
+}
+
+// 抽 XML 的文本节点（跳过标签），顺手解 &amp; / &#x4E2D; 这类实体
+void CollectXmlText(const std::string& xml, std::string& out, size_t cap) {
+    std::string buf;
+    bool inTag = false;
+    for (size_t i = 0; i < xml.size() && out.size() < cap; ++i) {
+        const char c = xml[i];
+        if (inTag) {
+            if (c == '>') {
+                inTag = false;
+                if (!buf.empty()) { Append(out, buf); buf.clear(); }
+            }
+            continue;
+        }
+        if (c == '<') {
+            inTag = true;
+            if (!buf.empty()) { Append(out, buf); buf.clear(); }
+            continue;
+        }
+        if (c == '&') {
+            const size_t semi = xml.find(';', i);
+            if (semi != std::string::npos && semi - i <= 12) {
+                const std::string ent = xml.substr(i + 1, semi - i - 1);
+                if (ent == "amp") buf.push_back('&');
+                else if (ent == "lt") buf.push_back('<');
+                else if (ent == "gt") buf.push_back('>');
+                else if (ent == "quot") buf.push_back('"');
+                else if (ent == "apos") buf.push_back('\'');
+                else if (ent.size() > 1 && ent[0] == '#') {
+                    const unsigned long cp = (ent[1] == 'x' || ent[1] == 'X')
+                        ? strtoul(ent.c_str() + 2, nullptr, 16)
+                        : strtoul(ent.c_str() + 1, nullptr, 10);
+                    if (cp) AppendCodepoint(buf, cp);
+                } else {
+                    buf.push_back('&');
+                    buf += ent;
+                    buf.push_back(';');
+                }
+                i = semi;
+                continue;
+            }
+        }
+        buf.push_back(c);
+    }
+    if (!buf.empty()) Append(out, buf);
+}
+
+bool StartsWith(const std::string& s, const char* p) {
+    const size_t n = strlen(p);
+    return s.size() >= n && s.compare(0, n, p) == 0;
+}
+
+bool IsOoxmlExt(const std::string& e) {
+    return e == ".docx" || e == ".docm" || e == ".dotx" ||
+           e == ".xlsx" || e == ".xlsm" ||
+           e == ".pptx" || e == ".pptm" ||
+           e == ".odt" || e == ".ods" || e == ".odp";
+}
+
+// 只读"装着正文"的那几个 XML，不碰 picture/fonts 这类二进制
+bool OoxmlEntryWanted(const std::string& ext, const std::string& name) {
+    if (name == "docProps/core.xml") return true;
+    if (ext == ".docx" || ext == ".docm" || ext == ".dotx")
+        return name == "word/document.xml" || StartsWith(name, "word/header") ||
+               StartsWith(name, "word/footer") || name == "word/footnotes.xml" ||
+               name == "word/endnotes.xml" || StartsWith(name, "word/comments");
+    if (ext == ".xlsx" || ext == ".xlsm")
+        return name == "xl/sharedStrings.xml" || StartsWith(name, "xl/worksheets/sheet");
+    if (ext == ".pptx" || ext == ".pptm")
+        return StartsWith(name, "ppt/slides/slide") || StartsWith(name, "ppt/notesSlides/");
+    if (ext == ".odt" || ext == ".ods" || ext == ".odp")
+        return name == "content.xml" || name == "meta.xml";
+    return false;
+}
+
+std::string OoxmlFromMem(const std::string& data, const std::string& ext) {
+    mz_zip_archive zip;
+    memset(&zip, 0, sizeof zip);
+    if (!mz_zip_reader_init_mem(&zip, data.data(), data.size(), 0)) return {};
+
+    std::string out;
+    const mz_uint n = mz_zip_reader_get_num_files(&zip);
+    for (mz_uint i = 0; i < n && out.size() < kStoreCap; ++i) {
+        mz_zip_archive_file_stat st;
+        if (!mz_zip_reader_file_stat(&zip, i, &st)) continue;
+        const std::string name = st.m_filename;
+        if (!OoxmlEntryWanted(ext, name)) continue;
+        // 单条目上上限：防 zip 炸弹，也避免正文机器生成的大 sheet 卡住
+        if (st.m_uncomp_size == 0 || st.m_uncomp_size > 32u * 1024 * 1024) continue;
+        size_t sz = 0;
+        void* p = mz_zip_reader_extract_to_heap(&zip, i, &sz, 0);
+        if (!p) continue;
+        std::string xml((const char*)p, sz);
+        mz_free(p);
+        CollectXmlText(xml, out, kStoreCap);
+    }
+    mz_zip_reader_end(&zip);
+    return out;
+}
+
+std::string OoxmlText(const std::string& path, const std::string& ext) {
+    std::string data;
+    if (!ReadAll(path, 128ull * 1024 * 1024, data)) return {};
+    return OoxmlFromMem(data, ext);
+}
+
+// .zip：条目名本身可搜，里面的文本/Office 文件再抽一层（不递归、不套娃）
+std::string ZipStrings(const std::string& path) {
+    std::string data;
+    if (!ReadAll(path, 512ull * 1024 * 1024, data)) return {};
+
+    mz_zip_archive zip;
+    memset(&zip, 0, sizeof zip);
+    if (!mz_zip_reader_init_mem(&zip, data.data(), data.size(), 0)) return {};
+
+    std::string out;
+    const mz_uint n = std::min<mz_uint>(mz_zip_reader_get_num_files(&zip), 4000);
+    uint64_t budget = 4ull * 1024 * 1024;   // 解压总量上限
+    for (mz_uint i = 0; i < n && out.size() < kStoreCap; ++i) {
+        mz_zip_archive_file_stat st;
+        if (!mz_zip_reader_file_stat(&zip, i, &st)) continue;
+        if (mz_zip_reader_is_file_a_directory(&zip, i)) continue;
+
+        const std::string name = st.m_filename;
+        Append(out, name);
+
+        const std::string ext = LowerExt(name);
+        const bool plain = IsTextExt(ext) || ext == ".dxf" ||
+                           ext == ".step" || ext == ".stp" || ext == ".obj";
+        const bool ooxml = IsOoxmlExt(ext);
+        if (!plain && !ooxml) continue;
+        if (st.m_uncomp_size == 0 || st.m_uncomp_size > budget) continue;
+
+        size_t sz = 0;
+        void* p = mz_zip_reader_extract_to_heap(&zip, i, &sz, 0);
+        if (!p) continue;
+        std::string inner((const char*)p, sz);
+        mz_free(p);
+        budget -= std::min<uint64_t>(budget, sz);
+
+        if (ooxml) {
+            std::string t = OoxmlFromMem(inner, ext);
+            if (out.size() < kStoreCap) {
+                size_t room = kStoreCap - out.size();
+                out.append(t, 0, std::min(room, t.size()));
+            }
+        } else {
+            std::string u8 = Decode(inner);
+            if (u8.size() > kStoreCap) u8.resize(kStoreCap);
+            Append(out, u8);
+        }
+    }
+    mz_zip_reader_end(&zip);
+    return out;
+}
+
 }  // namespace
 
 std::wstring ToWide(const std::string& utf8) {
@@ -332,7 +533,10 @@ std::string LowerExt(const std::string& path) {
 
 bool Supports(const std::string& ext) {
     if (IsTextExt(ext)) return true;
-    return ext == ".dxf" || ext == ".step" || ext == ".stp" || ext == ".obj";
+    if (ext == ".dxf" || ext == ".step" || ext == ".stp" || ext == ".obj") return true;
+    if (IsOoxmlExt(ext)) return true;     // docx/xlsx/pptx/odt...
+    if (ext == ".zip") return true;
+    return false;
 }
 
 std::string Text(const std::string& path, const std::string& ext) {
@@ -347,6 +551,8 @@ std::string Text(const std::string& path, const std::string& ext) {
         return Strings(path);
     }
     if (ext == ".obj") return ObjStrings(path);
+    if (IsOoxmlExt(ext)) return OoxmlText(path, ext);
+    if (ext == ".zip") return ZipStrings(path);
     return PlainText(path);
 }
 
