@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -127,10 +128,11 @@ int main(int argc, char** argv) {
     printf("  遍历耗时 %.2f 秒\n\n", std::chrono::duration<double>(t1 - t0).count());
 
     // 2) 建内容索引（跑的是应用里同一套代码）
+    const bool skipBuild = std::getenv("REPORT_SKIP_BUILD") != nullptr;
     printf("== 建内容索引 ==\n");
     std::atomic<bool> cancel{false};
     auto t2 = std::chrono::steady_clock::now();
-    content::Build(root, cancel);
+    if (!skipBuild) content::Build(root, cancel);
     auto t3 = std::chrono::steady_clock::now();
     const double buildSec = std::chrono::duration<double>(t3 - t2).count();
     printf("  写入 %d 个（扫描到候选 %d 个），耗时 %.2f 秒\n\n",
@@ -188,6 +190,85 @@ int main(int argc, char** argv) {
         printf("\n");
     }
     sqlite3_close(db);
+
+    // 4.5) 逐格式抽取耗时：采样每个扩展名最多 20 个文件，直接调 extract::Text
+    {
+        std::map<std::string, std::vector<std::string>> byExt;
+        std::map<std::string, Stat> dummy;
+        std::function<void(const std::wstring&)> collect = [&](const std::wstring& dir) {
+            std::wstring pattern = dir;
+            if (!pattern.empty() && pattern.back() != L'\\') pattern += L'\\';
+            pattern += L'*';
+            WIN32_FIND_DATAW fd;
+            HANDLE h = FindFirstFileW(pattern.c_str(), &fd);
+            if (h == INVALID_HANDLE_VALUE) return;
+            std::vector<std::wstring> subs;
+            do {
+                const wchar_t* n = fd.cFileName;
+                if (n[0] == L'.' && (n[1] == 0 || (n[1] == L'.' && n[2] == 0))) continue;
+                if (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) continue;
+                std::wstring full = dir;
+                if (!full.empty() && full.back() != L'\\') full += L'\\';
+                full += n;
+                if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+                    std::wstring low;
+                    for (const wchar_t* q = n; *q; ++q) low.push_back((wchar_t)towlower(*q));
+                    if (low == L"node_modules" || low == L".git" || low == L"__pycache__") continue;
+                    subs.push_back(full);
+                    continue;
+                }
+                std::string u8 = extract::FromWide(full);
+                std::string e = LowerExtOf(u8);
+                if (!extract::Supports(e)) continue;
+                if (byExt[e].size() < 20) byExt[e].push_back(u8);
+            } while (FindNextFileW(h, &fd));
+            FindClose(h);
+            for (auto& d : subs) collect(d);
+        };
+        collect(extract::ToWide(root));
+
+        printf("\n== 逐格式抽取耗时（每格式最多采样 20 个）==\n");
+        printf("  %-9s %5s %12s %12s\n", "扩展名", "采样", "平均 ms", "最大 ms");
+        std::vector<std::pair<double, std::string>> slow;
+        for (auto& kv : byExt) {
+            double sum = 0, mx = 0;
+            for (auto& f : kv.second) {
+                auto a = std::chrono::steady_clock::now();
+                std::string t = extract::Text(f, kv.first);
+                auto b = std::chrono::steady_clock::now();
+                const double ms = std::chrono::duration<double, std::milli>(b - a).count();
+                sum += ms;
+                if (ms > mx) mx = ms;
+            }
+            const double avg = kv.second.empty() ? 0 : sum / kv.second.size();
+            printf("  %-9s %5zu %12.1f %12.1f\n", kv.first.c_str(), kv.second.size(), avg, mx);
+            slow.push_back({avg, kv.first});
+        }
+        std::sort(slow.rbegin(), slow.rend());
+
+        // 找出真正拖时间的单个文件
+        if (std::getenv("REPORT_SLOWEST")) {
+            struct Item { double ms; std::string path; };
+            std::vector<Item> items;
+            for (auto& kv : byExt) {
+                for (auto& f : kv.second) {
+                    auto a = std::chrono::steady_clock::now();
+                    extract::Text(f, kv.first);
+                    auto b = std::chrono::steady_clock::now();
+                    items.push_back({std::chrono::duration<double, std::milli>(b - a).count(), f});
+                }
+            }
+            std::sort(items.begin(), items.end(),
+                      [](const Item& x, const Item& y) { return x.ms > y.ms; });
+            printf("\n  最慢 10 个文件:\n");
+            for (size_t i = 0; i < items.size() && i < 10; ++i)
+                printf("    %8.1f ms  %s\n", items[i].ms, items[i].path.c_str());
+        }
+        printf("\n  最慢三档: ");
+        for (size_t i = 0; i < slow.size() && i < 3; ++i)
+            printf("%s(%.0fms) ", slow[i].second.c_str(), slow[i].first);
+        printf("\n");
+    }
 
     // 5) 库体积
     WIN32_FILE_ATTRIBUTE_DATA fad;
