@@ -923,6 +923,73 @@ std::string DwgText(const std::string& path) {
 
 // ======================= .doc / .ppt / .xls（外部转换器）=======================
 
+// 97-2003 的 Office 二进制里，中文是 UTF-16LE 存的。
+// 没装 catdoc/LibreOffice 时，直接扫 UTF-16LE 可读串——零依赖也能搜到中文。
+// 实测：一份 46 KB 的中期评定表能抽出 2500 多字，标题、学院、专业、正文都在。
+bool ReadableCp(unsigned cp) {
+    return (cp >= 0x4E00 && cp <= 0x9FFF) || (cp >= 0x3000 && cp <= 0x303F) ||
+           (cp >= 0xFF00 && cp <= 0xFFEF) || (cp >= 0x20 && cp <= 0x7E) ||
+           cp == 0x0D || cp == 0x0A || cp == 0x09;
+}
+
+std::string ScanUtf16At(const std::string& raw, size_t parity, int* charsOut) {
+    std::string out, buf;
+    int cnt = 0, total = 0;
+    const size_t n = raw.size() ? raw.size() - 1 : 0;
+    size_t i = parity;
+    while (i < n && out.size() < kStoreCap) {
+        const unsigned cp = (unsigned char)raw[i] | ((unsigned char)raw[i + 1] << 8);
+        if (ReadableCp(cp)) {
+            AppendCodepoint(buf, cp);
+            ++cnt;
+            i += 2;
+            continue;
+        }
+        if (cnt >= 6) { Append(out, buf); total += cnt; }   // 太短的段基本都是二进制噪音
+        buf.clear();
+        cnt = 0;
+        // 断档后必须回到指定奇偶性再重开一段，
+        // 否则奇数字节上的假阳性（如 0x5700 落在汉字区）会把首字吃掉
+        i += 1;
+        if (((i - parity) & 1) != 0) i += 1;
+    }
+    if (cnt >= 6) { Append(out, buf); total += cnt; }
+    if (charsOut) *charsOut = total;
+    return out;
+}
+
+std::string LegacyUtf16Strings(const std::string& path) {
+    Reader r;
+    if (!r.Open(path, 64ull * 1024 * 1024)) return {};
+    std::string raw;
+    if (!r.ReadPrefix(64u * 1024 * 1024, raw)) return {};
+
+    // 奇/偶字节各扫一遍取更长的那个：
+    // UTF-16LE 正常对齐到偶数字节，只扫一边的话错位处的假阳性会把首字吃掉。
+    int evenChars = 0, oddChars = 0;
+    std::string even = ScanUtf16At(raw, 0, &evenChars);
+    std::string odd  = ScanUtf16At(raw, 1, &oddChars);
+    return (oddChars > evenChars) ? odd : even;
+}
+
+// 从注册表 App Paths 找安装路径：WinRAR/7-Zip 装在非标准目录时靠它
+// （本机 WinRAR 就在 C:\D\Program Files\WinRAR，写死的路径根本盖不到）
+std::wstring RegAppPath(const wchar_t* exe) {
+    const std::wstring key = std::wstring(L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\") + exe;
+    HKEY k = nullptr;
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, key.c_str(), 0, KEY_READ, &k) != ERROR_SUCCESS)
+        return {};
+    wchar_t buf[MAX_PATH * 2];
+    DWORD sz = sizeof buf, type = 0;
+    std::wstring out;
+    if (RegQueryValueExW(k, nullptr, nullptr, &type, (BYTE*)buf, &sz) == ERROR_SUCCESS &&
+        (type == REG_SZ || type == REG_EXPAND_SZ))
+        out.assign(buf, sz / sizeof(wchar_t));
+    RegCloseKey(k);
+    while (!out.empty() && out.back() == L'\0') out.pop_back();
+    return out;
+}
+
 std::wstring FindTool(const wchar_t* name) {
     std::wstring p = external::FindOnPath(name);
     if (!p.empty()) return p;
@@ -945,6 +1012,20 @@ std::wstring FindTool(const wchar_t* name) {
         };
         for (const auto& c : cands)
             if (external::FileExists(c)) return c;
+    }
+    // 注册表兜底
+    {
+        const std::wstring direct = RegAppPath(name);
+        if (!direct.empty() && external::FileExists(direct)) return direct;
+
+        for (const wchar_t* host : {L"WinRAR.exe", L"7zFM.exe", L"7z.exe"}) {
+            const std::wstring p = RegAppPath(host);
+            if (p.empty()) continue;
+            const size_t slash = p.find_last_of(L"\\/");
+            if (slash == std::wstring::npos) continue;
+            const std::wstring cand = p.substr(0, slash + 1) + name;
+            if (external::FileExists(cand)) return cand;
+        }
     }
     return {};
 }
@@ -999,27 +1080,48 @@ std::string LegacyText(const std::string& path, const std::string& ext) {
     std::string out;
     DWORD code = 1;
     // 工具失败时错误信息会进 stdout/stderr，必须看退出码，否则会把错误当成正文
-    auto tryRun = [&](const wchar_t* tool, const std::wstring& args) -> bool {
+    auto tryRun = [&](const wchar_t* tool, const std::wstring& args, std::string& dst) -> bool {
         const std::wstring exe = FindTool(tool);
         if (exe.empty()) return false;
-        out.clear();
-        return external::RunCapture(exe, args, out, kStoreCap, 60000, &code) && code == 0;
+        dst.clear();
+        return external::RunCapture(exe, args, dst, kStoreCap, 60000, &code) && code == 0;
     };
+    std::string tmp;
 
     // catdoc 系优先：启动快，直接吐 stdout
     if (ext == ".doc") {
-        if (tryRun(L"catdoc.exe", L"-d utf-8 \"" + src + L"\"")) return out;
-        if (tryRun(L"antiword.exe", L"-m UTF-8.txt \"" + src + L"\"")) return out;
+        if (tryRun(L"catdoc.exe", L"-d utf-8 \"" + src + L"\"", tmp)) return tmp;
     } else if (ext == ".ppt") {
-        if (tryRun(L"catppt.exe", L"-d utf-8 \"" + src + L"\"")) return out;
+        if (tryRun(L"catppt.exe", L"-d utf-8 \"" + src + L"\"", tmp)) return tmp;
     } else if (ext == ".xls") {
-        if (tryRun(L"xls2csv.exe", L"-d utf-8 \"" + src + L"\"")) return out;
+        if (tryRun(L"xls2csv.exe", L"-d utf-8 \"" + src + L"\"", tmp)) return tmp;
+    }
+
+    // 零依赖兜底：直接扫 UTF-16LE。
+    // 这一档必须排在 antiword 前面 —— antiword 没有中文映射时会把汉字全输出成 '?'。
+    {
+        std::string u16 = LegacyUtf16Strings(path);
+        if (u16.size() >= 200) return u16;
+        if (!u16.empty()) out = u16;      // 太少就留着和后面的拼
+    }
+
+    if (ext == ".doc" && tryRun(L"antiword.exe", L"-m UTF-8.txt \"" + src + L"\"", tmp)) {
+        if (!out.empty()) out += "\n";
+        out += tmp;                       // 英文文档 antiword 排版更好，拼在后面
+        return out;
     }
 
     // 兜底 LibreOffice（慢：每个文件都要起一次 soffice）
     const std::wstring so = FindSoffice();
-    if (!so.empty()) return SofficeText(so, path);
-    return {};
+    if (!so.empty()) {
+        std::string soText = SofficeText(so, path);
+        if (!soText.empty()) {
+            if (!out.empty()) out += "\n";
+            out += soText;
+            return out;
+        }
+    }
+    return out;
 }
 
 // ======================= .7z / .rar（外部 7z / UnRAR）=======================

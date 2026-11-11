@@ -45,6 +45,7 @@ g++ -O2 -std=c++17 -static -s -mwindows ^
   third_party/imgui/imgui_tables.cpp third_party/imgui/imgui_widgets.cpp ^
   third_party/imgui/backends/imgui_impl_win32.cpp third_party/imgui/backends/imgui_impl_dx11.cpp ^
   -ld3d11 -ldxgi -ld3dcompiler -ldwmapi -lgdi32 -luser32 -lshell32 -lole32 -limm32 ^
+  -ladvapi32 ^
   -o build\SpaceSift.exe
 if errorlevel 1 exit /b 1
 

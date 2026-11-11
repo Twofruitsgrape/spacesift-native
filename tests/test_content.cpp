@@ -167,7 +167,19 @@ int main() {
     // 7) P3：PDF 文本层
     WriteBytes(dir + L"\\r.pdf", MakePdf("Hello PDF Keyword Omega"));
 
-    // 8) 排序：同样命中，出现次数多的应该排前面
+    // 9) 旧版 .doc：UTF-16LE 扫描（零依赖，不靠 antiword/catdoc）
+    {
+        std::string u16;
+        const char* cn = "南京航空航天大学 研究生中期评定表";
+        // 把 UTF-8 转成 UTF-16LE 字节串，冒充 .doc 的正文区
+        int wn = MultiByteToWideChar(CP_UTF8, 0, cn, -1, nullptr, 0);
+        std::wstring w((size_t)wn, L'\0');
+        MultiByteToWideChar(CP_UTF8, 0, cn, -1, &w[0], wn);
+        u16.assign((const char*)w.data(), w.size() * sizeof(wchar_t));
+        u16 = std::string("\xd0\xcf\x11\xe0", 4) + std::string(300, '\0') + u16 + std::string(300, '\0');
+        WriteBytes(dir + L"\\legacy.doc", u16);
+    }
+
     WriteBytes(dir + L"\\rank_a.txt", "关键词壬 填充填充填充填充填充填充填充填充填充填充");
     WriteBytes(dir + L"\\rank_b.txt",
                "关键词壬 关键词壬 关键词壬 填充填充填充填充填充填充填充填充填充填充");
@@ -192,6 +204,7 @@ int main() {
         {"\\a.zip",    "压缩包内文本关键词辛"},   // 压缩包内文本文件
         {"\\r.pdf",    "Keyword Omega"},      // PDF 文本层
         {"\\e.dwg",    "teksto"},            // DWG（经 dwg2dxf 转 DXF）
+        {"\\legacy.doc", "南京航空航天大学"}, // 旧版 .doc 的 UTF-16LE 扫描
     };
     if (!extract::DwgReady()) cases[sizeof cases / sizeof cases[0] - 1].must = "__skip__";
     for (auto& c : cases) {
