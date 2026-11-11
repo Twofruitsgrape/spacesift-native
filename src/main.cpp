@@ -1861,8 +1861,14 @@ static void DrawContentSearchTab() {
         if (!extract::ArchiveReady())
             ImGui::TextDisabled("提示：.7z/.rar 需要安装 7-Zip 或 WinRAR。");
         {
+            static bool ocrDirty = false;
             bool ocr = extract::OcrReady();
-            if (ImGui::Checkbox("OCR 扫描件/图片（慢）", &ocr)) extract::SetOcrEnabled(ocr);
+            if (ImGui::Checkbox("OCR 扫描件/图片（慢）", &ocr)) {
+                extract::SetOcrEnabled(ocr);
+                ocrDirty = true;      // 开关变了要整库重建，否则旧的"抽空"记录不会重试
+            }
+            if (ocrDirty && content::HasIndex(g_rootPath))
+                ImGui::TextDisabled("设置已改变 —— 点下面的「增量更新」重新索引。");
             if (!extract::OcrAvailable())
                 ImGui::TextDisabled("（需要安装 Tesseract-OCR 才能启用）");
             else if (ocr)

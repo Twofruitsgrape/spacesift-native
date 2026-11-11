@@ -38,8 +38,11 @@ bool Exec(sqlite3* db, const char* sql) {
     return db && sqlite3_exec(db, sql, nullptr, nullptr, nullptr) == SQLITE_OK;
 }
 
-// 抽取器逻辑一改，旧正文就不能信了；这个值一改就整库重建
-const char* kExtractVersion = "4";
+// 抽取器逻辑一改，旧正文就不能信了；这个值一改就整库重建。
+// OCR 开关也算在内：关着时被记为"抽空"的扫描件，开了之后必须重来一遍。
+std::string ExtractVersion() {
+    return std::string("4") + (extract::OcrReady() ? "-ocr" : "");
+}
 
 std::string MetaGet(sqlite3* db, const char* key) {
     std::string out;
@@ -371,10 +374,11 @@ void Build(const std::string& root, const std::atomic<bool>& cancel) {
     Exec(db, "CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT);");
 
     // 抽取器或索引结构升级 → 旧正文全部作废重建
-    if (MetaGet(db, "extract_version") != kExtractVersion) {
+    const std::string version = ExtractVersion();
+    if (MetaGet(db, "extract_version") != version) {
         Exec(db, "DROP TABLE IF EXISTS docs_fts;");
         Exec(db, "DROP TABLE IF EXISTS docs;");
-        MetaPut(db, "extract_version", kExtractVersion);
+        MetaPut(db, "extract_version", version);
     }
 
     Exec(db,
@@ -476,6 +480,7 @@ void Build(const std::string& root, const std::atomic<bool>& cancel) {
     MetaPut(db, "built_at", std::to_string((long long)time(nullptr)));
     MetaPut(db, "partial", cancel.load() ? "1" : "0");
     MetaPut(db, "version", "2");
+    MetaPut(db, "extract_version", version);
 
     if (qry) sqlite3_finalize(qry);
     if (ups) sqlite3_finalize(ups);
