@@ -22,3 +22,6 @@ check_paths.py
 run_test.py
 try_scan.py
 pdfium.tgz
+
+# LibreDWG 只在做 DWG 插件时本地解压用，不进仓库
+third_party/libredwg/
