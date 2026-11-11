@@ -303,10 +303,13 @@ void Walk(const std::wstring& dir, const std::atomic<bool>& cancel, const FileFn
         }
 
         const uint64_t size = ((uint64_t)fd.nFileSizeHigh << 32) | (uint64_t)fd.nFileSizeLow;
-        if (size == 0 || size > extract::kSkipAbove) continue;
+        if (size == 0) continue;
 
         std::string u8 = extract::FromWide(full);
-        if (!extract::Supports(extract::LowerExt(u8))) continue;
+        const std::string ext = extract::LowerExt(u8);
+        if (!extract::Supports(ext)) continue;
+        // zip/.mph 是流式读的，体积大也不影响（COMSOL 模型动辄几百 MB 到几 GB）
+        if (size > extract::kSkipAbove && !extract::StreamsLargeFiles(ext)) continue;
 
         g_seen.fetch_add(1);
         SetCurrent(u8);

@@ -10,6 +10,8 @@
 
 #include "miniz.h"
 #include "external.h"
+// SolidWorks 零件/装配体/工程图（MIT，纯 C++ 解析，不装 SW 也能读）
+#include "openswx/document.h"
 // 只用声明和类型；函数体全部靠 LoadLibrary + GetProcAddress 拿到，
 // 所以没装 pdfium.dll 也能编译、能运行，只是 PDF 不参与索引。
 #include "fpdf_text.h"
@@ -34,6 +36,8 @@ bool IsTextExt(const std::string& e) {
         ".iges", ".igs", ".stl", ".ply",
         // CAD 附属文本
         ".ctb", ".stb", ".scr", ".lsp",
+        // CAE 输入/文本输出：ABAQUS .inp/.dat/.msg/.sta，ANSYS .cdb/.anf/.wbpj
+        ".inp", ".dat", ".msg", ".sta", ".cdb", ".anf", ".wbpj",
     };
     for (const char* x : kExts) if (e == x) return true;
     return false;
@@ -374,6 +378,11 @@ std::string PlainText(const std::string& path) {
     if (!r.ReadPrefix((size_t)kReadCap, raw)) return {};
     std::string u8 = Decode(raw);
     if (u8.size() > kStoreCap) u8.resize(kStoreCap);
+    // 质量闸门：.dat/.db 这类扩展名太泛，浏览器缓存/二进制文件不能当正文入库
+    size_t bad = 0;
+    for (unsigned char c : u8)
+        if (c < 0x09 || (c > 0x0D && c < 0x20)) ++bad;
+    if (!u8.empty() && bad * 20 > u8.size()) return {};
     return u8;
 }
 
@@ -467,6 +476,161 @@ void CollectXmlText(const std::string& xml, std::string& out, size_t cap) {
     if (!buf.empty()) Append(out, buf);
 }
 
+
+// ======================= 流式 zip（.mph 能到几百 MB 甚至 GB）=======================
+
+size_t MzReadCb(void* opaque, mz_uint64 ofs, void* buf, size_t n) {
+    HANDLE h = (HANDLE)opaque;
+    LARGE_INTEGER li;
+    li.QuadPart = (LONGLONG)ofs;
+    if (!SetFilePointerEx(h, li, nullptr, FILE_BEGIN)) return 0;
+    DWORD got = 0;
+    if (!ReadFile(h, buf, (DWORD)n, &got, nullptr)) return 0;
+    return got;
+}
+
+// 不把整个压缩包读进内存：只按需 seek + read
+class ZipReader {
+  public:
+    ~ZipReader() { Close(); }
+
+    bool Open(const std::string& path) {
+        Close();
+        const std::wstring w = ToWide(path);
+        h_ = CreateFileW(w.c_str(), GENERIC_READ,
+                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                         nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (h_ == INVALID_HANDLE_VALUE) return false;
+        LARGE_INTEGER sz;
+        if (!GetFileSizeEx(h_, &sz) || sz.QuadPart <= 0) { Close(); return false; }
+        memset(&zip_, 0, sizeof zip_);
+        zip_.m_pRead = MzReadCb;
+        zip_.m_pIO_opaque = h_;
+        if (!mz_zip_reader_init(&zip_, (mz_uint64)sz.QuadPart, 0)) { Close(); return false; }
+        ok_ = true;
+        return true;
+    }
+
+    void Close() {
+        if (ok_) { mz_zip_reader_end(&zip_); ok_ = false; }
+        if (h_ != INVALID_HANDLE_VALUE) { CloseHandle(h_); h_ = INVALID_HANDLE_VALUE; }
+    }
+
+    int Count() { return ok_ ? (int)mz_zip_reader_get_num_files(&zip_) : 0; }
+    bool IsDir(int i) {
+        return ok_ && mz_zip_reader_is_file_a_directory(&zip_, (mz_uint)i) != 0;
+    }
+    bool Name(int i, std::string& out) {
+        if (!ok_) return false;
+        char buf[1024];
+        const mz_uint n = mz_zip_reader_get_filename(&zip_, (mz_uint)i, buf, sizeof buf);
+        if (n == 0) return false;
+        out.assign(buf);
+        return true;
+    }
+    mz_uint64 Size(int i) {
+        mz_zip_archive_file_stat st;
+        if (!ok_ || !mz_zip_reader_file_stat(&zip_, (mz_uint)i, &st)) return 0;
+        return st.m_uncomp_size;
+    }
+    bool Extract(int i, std::string& out, size_t cap) {
+        out.clear();
+        if (!ok_) return false;
+        size_t sz = 0;
+        void* p = mz_zip_reader_extract_to_heap(&zip_, (mz_uint)i, &sz, 0);
+        if (!p) return false;
+        out.assign((const char*)p, sz < cap ? sz : cap);
+        mz_free(p);
+        return true;
+    }
+
+  private:
+    HANDLE         h_ = INVALID_HANDLE_VALUE;
+    mz_zip_archive zip_{};
+    bool           ok_ = false;
+};
+
+// JSON 里的字符串值（含 \uXXXX 转义）—— smodel.json 的 label 全在这
+void CollectJsonStrings(const std::string& s, std::string& out, size_t cap) {
+    std::string buf;
+    for (size_t i = 0; i < s.size() && out.size() < cap;) {
+        if (s[i] != '"') { ++i; continue; }
+        ++i;
+        buf.clear();
+        while (i < s.size() && s[i] != '"') {
+            if (s[i] == '\\' && i + 1 < s.size()) {
+                const char e = s[i + 1];
+                if (e == 'u' && i + 5 < s.size()) {
+                    const unsigned cp = (unsigned)strtoul(s.substr(i + 2, 4).c_str(), nullptr, 16);
+                    if (cp) AppendCodepoint(buf, cp);
+                    i += 6;
+                    continue;
+                }
+                buf.push_back(e == 'n' || e == 'r' || e == 't' ? ' ' : e);
+                i += 2;
+                continue;
+            }
+            buf.push_back(s[i++]);
+        }
+        ++i;
+        if (buf.size() >= 2) Append(out, buf);
+    }
+}
+
+// ======================= COMSOL .mph =======================
+//
+// .mph 是 zip。COMSOL 6.x 的 model.xml 是空的（207 字节），真正的模型定义在：
+//   smodel.json   —— 模型树，label 是用户看到的特征名（含中文）
+//   dmodel.xml    —— 参数、变量、物理场、选择、注释
+//   modelinfo.xml —— 标题/描述/版本/计算耗时
+std::string MphText(const std::string& path) {
+    ZipReader z;
+    if (!z.Open(path)) return {};
+
+    // 先按名字定位，再按优先级分配配额：
+    // smodel.json 里的 label 是用户看得懂的特征名（含中文），最值钱；
+    // dmodel.xml 有 5 MB 的参数字段，不限额会把配额吃光。
+    int idxJson = -1, idxInfo = -1, idxDmodel = -1, idxVer = -1, idxLic = -1;
+    const int n = z.Count();
+    for (int i = 0; i < n; ++i) {
+        if (z.IsDir(i)) continue;
+        std::string name;
+        if (!z.Name(i, name)) continue;
+        std::string lower = name;
+        for (auto& c : lower) c = (char)tolower((unsigned char)c);
+        if (lower == "smodel.json") idxJson = i;
+        else if (lower == "modelinfo.xml") idxInfo = i;
+        else if (lower == "dmodel.xml") idxDmodel = i;
+        else if (lower == "fileversion") idxVer = i;
+        else if (lower == "usedlicenses.txt") idxLic = i;
+    }
+
+    std::string out;
+    auto add = [&](int i, int mode, size_t subCap) {
+        if (i < 0) return;
+        if (z.Size(i) > 64ull * 1024 * 1024) return;
+        std::string body;
+        if (!z.Extract(i, body, 64u * 1024 * 1024)) return;
+        std::string tmp;
+        if (mode == 0)      CollectJsonStrings(body, tmp, subCap);
+        else if (mode == 1) CollectXmlText(body, tmp, subCap);
+        else {
+            tmp = Decode(body);
+            if (tmp.size() > subCap) tmp.resize(subCap);
+        }
+        if (out.size() < kStoreCap) {
+            const size_t room = kStoreCap - out.size();
+            out.append(tmp, 0, std::min(room, tmp.size()));
+        }
+    };
+    add(idxJson, 0, 40 * 1024);     // 模型树 label：中文特征名、参数名
+    add(idxInfo, 1, 4 * 1024);      // 标题/描述/版本/计算耗时
+    add(idxDmodel, 1, 18 * 1024);   // 参数、变量、物理场、选择
+    add(idxVer, 2, 256);
+    add(idxLic, 2, 512);
+    return out;
+}
+
 bool StartsWith(const std::string& s, const char* p) {
     const size_t n = strlen(p);
     return s.size() >= n && s.compare(0, n, p) == 0;
@@ -521,57 +685,65 @@ std::string OoxmlFromMem(const std::string& data, const std::string& ext) {
 }
 
 std::string OoxmlText(const std::string& path, const std::string& ext) {
-    std::string data;
-    if (!ReadAll(path, 128ull * 1024 * 1024, data)) return {};
-    return OoxmlFromMem(data, ext);
+    ZipReader z;
+    if (!z.Open(path)) return {};
+    std::string out;
+    const int n = z.Count();
+    for (int i = 0; i < n && out.size() < kStoreCap; ++i) {
+        if (z.IsDir(i)) continue;
+        std::string name;
+        if (!z.Name(i, name)) continue;
+        if (!OoxmlEntryWanted(ext, name)) continue;
+        const mz_uint64 sz = z.Size(i);
+        if (sz == 0 || sz > 32ull * 1024 * 1024) continue;
+        std::string body;
+        if (!z.Extract(i, body, 32u * 1024 * 1024)) continue;
+        CollectXmlText(body, out, kStoreCap);
+    }
+    return out;
 }
 
 std::string ZipStrings(const std::string& path) {
-    std::string data;
-    if (!ReadAll(path, 512ull * 1024 * 1024, data)) return {};
-
-    mz_zip_archive zip;
-    memset(&zip, 0, sizeof zip);
-    if (!mz_zip_reader_init_mem(&zip, data.data(), data.size(), 0)) return {};
+    ZipReader z;
+    if (!z.Open(path)) return {};
 
     std::string out;
-    const mz_uint n = std::min<mz_uint>(mz_zip_reader_get_num_files(&zip), 4000);
+    const int n = std::min(z.Count(), 4000);
     uint64_t budget = 4ull * 1024 * 1024;   // 解压总量上限
-    for (mz_uint i = 0; i < n && out.size() < kStoreCap; ++i) {
-        mz_zip_archive_file_stat st;
-        if (!mz_zip_reader_file_stat(&zip, i, &st)) continue;
-        if (mz_zip_reader_is_file_a_directory(&zip, i)) continue;
-
-        const std::string name = st.m_filename;
-        Append(out, name);
+    for (int i = 0; i < n && out.size() < kStoreCap; ++i) {
+        if (z.IsDir(i)) continue;
+        std::string name;
+        if (!z.Name(i, name)) continue;
+        Append(out, name);                  // 条目名本身也可搜
 
         const std::string ext = LowerExt(name);
         const bool plain = IsTextExt(ext) || ext == ".dxf" ||
                            ext == ".step" || ext == ".stp" || ext == ".obj";
         const bool ooxml = IsOoxmlExt(ext);
-        if (!plain && !ooxml) continue;
-        if (st.m_uncomp_size == 0 || st.m_uncomp_size > budget) continue;
+        const bool mph   = ext == ".mph";
+        if (!plain && !ooxml && !mph) continue;
+        const mz_uint64 sz = z.Size(i);
+        if (sz == 0 || sz > budget) continue;
 
-        size_t sz = 0;
-        void* p = mz_zip_reader_extract_to_heap(&zip, i, &sz, 0);
-        if (!p) continue;
-        std::string inner((const char*)p, sz);
-        mz_free(p);
-        budget -= std::min<uint64_t>(budget, sz);
+        std::string inner;
+        if (!z.Extract(i, inner, (size_t)budget)) continue;
+        budget -= std::min<uint64_t>(budget, inner.size());
 
         if (ooxml) {
             std::string t = OoxmlFromMem(inner, ext);
             if (out.size() < kStoreCap) {
-                size_t room = kStoreCap - out.size();
+                const size_t room = kStoreCap - out.size();
                 out.append(t, 0, std::min(room, t.size()));
             }
+        } else if (mph) {
+            // 嵌套的 .mph 只当二进制，不递归展开（里面已经是压缩流）
+            continue;
         } else {
             std::string u8 = Decode(inner);
             if (u8.size() > kStoreCap) u8.resize(kStoreCap);
             Append(out, u8);
         }
     }
-    mz_zip_reader_end(&zip);
     return out;
 }
 
@@ -1178,6 +1350,64 @@ std::string ArchiveText(const std::string& path) {
     return names;
 }
 
+// ======================= SolidWorks（.sldprt/.sldasm/.slddrw）=======================
+
+// 几何体内部没有可搜文字，能搜的是：
+//   全局/配置自定义属性、配置名、装配体引用的零件路径、焊接清单、图纸页与视图名
+void AppendLine(std::string& out, const std::string& s) {
+    if (s.empty() || out.size() >= kStoreCap) return;
+    out += s;
+    out.push_back('\n');
+}
+
+std::string SwText(const std::string& path) {
+    std::string out;
+    try {
+        // 必须用宽字符构造 path：std::filesystem::path 从窄字符串构造时
+        // 按 ANSI 解释，中文路径会直接挂掉。
+        auto res = openswx::SwxDocument::Open(std::filesystem::path(ToWide(path)));
+        if (!res.ok()) return {};
+        const openswx::Document& d = res.value().doc();
+
+        for (const auto& kv : d.global_properties) {
+            AppendLine(out, kv.first);
+            AppendLine(out, kv.second);
+        }
+        for (const auto& c : d.configurations) {
+            AppendLine(out, c.name);
+            for (const auto& kv : c.properties) {
+                AppendLine(out, kv.first);
+                AppendLine(out, kv.second);
+            }
+            // 装配体：引用的零件名/路径/配置名，以及焊接清单
+            for (const auto& comp : c.components) {
+                AppendLine(out, comp.name);
+                AppendLine(out, comp.path);
+                AppendLine(out, comp.configuration_name);
+            }
+            for (const auto& cut : c.cut_list) {
+                AppendLine(out, cut.name);
+                for (const auto& kv : cut.properties) {
+                    AppendLine(out, kv.first);
+                    AppendLine(out, kv.second);
+                }
+            }
+        }
+        for (const auto& sh : d.sheets) {
+            AppendLine(out, sh.name);
+            for (const auto& v : sh.views) {
+                AppendLine(out, v.name);
+                AppendLine(out, v.referenced_document);
+                AppendLine(out, v.referenced_configuration);
+            }
+        }
+    } catch (...) {
+        return {};    // 第三方库遇到奇怪输入时可能抛异常，别把整个索引拖下去
+    }
+    if (out.size() > kStoreCap) out.resize(kStoreCap);
+    return out;
+}
+
 // ======================= 扫描件/截图 OCR（外部 tesseract）=======================
 
 std::string OcrText(const std::string& path) {
@@ -1231,6 +1461,10 @@ std::string LowerExt(const std::string& path) {
     return e;
 }
 
+bool StreamsLargeFiles(const std::string& ext) {
+    return ext == ".zip" || ext == ".mph";   // 压缩包只按需读条目，GB 级也不怕
+}
+
 bool Supports(const std::string& ext) {
     if (IsTextExt(ext)) return true;
     if (ext == ".dxf" || ext == ".step" || ext == ".stp" || ext == ".obj") return true;
@@ -1241,6 +1475,8 @@ bool Supports(const std::string& ext) {
     if (ext == ".dwg") return DwgReady();
     if (ext == ".doc" || ext == ".ppt" || ext == ".xls") return LegacyReady();
     if (ext == ".7z" || ext == ".rar") return ArchiveReady();
+    if (ext == ".sldprt" || ext == ".sldasm" || ext == ".slddrw") return true;
+    if (ext == ".mph") return true;   // COMSOL 模型（zip）
     if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" ||
         ext == ".tif" || ext == ".tiff")
         return OcrReady();
@@ -1280,6 +1516,8 @@ std::string Text(const std::string& path, const std::string& ext) {
     if (ext == ".dwg") return DecodeAndTrim(DwgText(path));
     if (ext == ".doc" || ext == ".ppt" || ext == ".xls") return DecodeAndTrim(LegacyText(path, ext));
     if (ext == ".7z" || ext == ".rar") return DecodeAndTrim(ArchiveText(path));
+    if (ext == ".sldprt" || ext == ".sldasm" || ext == ".slddrw") return SwText(path);
+    if (ext == ".mph") return MphText(path);
     if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" ||
         ext == ".tif" || ext == ".tiff")
         return DecodeAndTrim(OcrText(path));

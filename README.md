@@ -15,6 +15,9 @@
   - Office：`docx docm xlsx xlsm pptx pptm odt ods odp`（直接读 OOXML，不需要装 Office）
   - 图纸：`dxf`（抓 TEXT/MTEXT/ATTRIB 属性块，不吞坐标）、`dwg`（外部转换器，见下）
   - 三维：`step stp`（只抓单引号里的零件名/文件名）、`iges igs`、`obj`
+  - SolidWorks：`sldprt sldasm slddrw`（读自定义属性、配置名、装配体引用的零件名/路径、焊接清单、图纸页与视图名）
+  - COMSOL：`mph`（zip 流式读，几百 MB 也不占内存；取 `smodel.json` 的模型树 label、`dmodel.xml` 的参数/变量/物理场、`modelinfo.xml`）
+  - CAE 文本：`inp cdb anf wbpj dat msg sta`（ABAQUS/ANSYS 的输入卡与文本输出）
   - 旧版 Office：`doc ppt xls`（靠 catdoc / antiword / LibreOffice，装了才启用）
   - PDF：`pdf`（文本层，最多前 300 页；**需要 pdfium.dll 放同目录**，没有就不参与索引）
   - 压缩包：`zip` 原生（条目名 + 内层文本/Office）；`7z rar` 靠外部 7-Zip / WinRAR（只索引条目名）

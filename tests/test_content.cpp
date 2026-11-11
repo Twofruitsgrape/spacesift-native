@@ -97,6 +97,7 @@ int main() {
         printf("[SKIP] 未找到 DWG 转换器，跳过 DWG 用例\n");
     }
     Check(extract::Supports(".png") == extract::OcrReady(), ".png/.jpg 随 tesseract 可用性启用");
+    Check(extract::Supports(".sldprt") && extract::Supports(".sldasm"), "支持 .sldprt/.sldasm（openswx）");
     if (extract::OcrReady()) printf("[INFO] tesseract 已就位，扫描件/截图 OCR 可用\n");
     Check(extract::LowerExt("C:\\A\\B.STEP") == ".step", "扩展名转小写");
 
@@ -167,7 +168,12 @@ int main() {
     // 7) P3：PDF 文本层
     WriteBytes(dir + L"\\r.pdf", MakePdf("Hello PDF Keyword Omega"));
 
-    // 9) 旧版 .doc：UTF-16LE 扫描（零依赖，不靠 antiword/catdoc）
+    // 9) CAE 输入卡（ABAQUS / ANSYS 都是纯文本）
+    WriteBytes(dir + L"\\job.inp",
+               "** ABAQUS input deck\n*Heading\n** 三维流固耦合算例 关键词癸\n"
+               "*Material, name=STEEL\n*Elastic\n210000., 0.3\n");
+
+    // 10) 旧版 .doc：UTF-16LE 扫描（零依赖，不靠 antiword/catdoc）
     {
         std::string u16;
         const char* cn = "南京航空航天大学 研究生中期评定表";
@@ -205,8 +211,12 @@ int main() {
         {"\\r.pdf",    "Keyword Omega"},      // PDF 文本层
         {"\\e.dwg",    "teksto"},            // DWG（经 dwg2dxf 转 DXF）
         {"\\legacy.doc", "南京航空航天大学"}, // 旧版 .doc 的 UTF-16LE 扫描
+        {"\\job.inp",   "关键词癸"},        // ABAQUS/ANSYS 输入卡（纯文本）
     };
-    if (!extract::DwgReady()) cases[sizeof cases / sizeof cases[0] - 1].must = "__skip__";
+    // 没装 DWG 转换器时跳过那一条（按文件名找，不靠数组位置）
+    if (!extract::DwgReady())
+        for (auto& c : cases)
+            if (std::string(c.f) == "\\e.dwg") c.must = "__skip__";
     for (auto& c : cases) {
         if (std::string(c.must) == "__skip__") continue;
         std::string p = dirU8 + c.f;

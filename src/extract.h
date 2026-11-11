@@ -15,6 +15,9 @@ namespace extract {
 // 参与内容索引的扩展名白名单（含点，小写）
 bool Supports(const std::string& ext);
 
+// 这些格式是流式读的（只取需要的条目），不受 kSkipAbove 体积上限限制
+bool StreamsLargeFiles(const std::string& ext);
+
 // 取小写扩展名（含点）；没有扩展名返回空串
 std::string LowerExt(const std::string& path);
 

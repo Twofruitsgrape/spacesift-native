@@ -7,40 +7,67 @@ call :find_toolchain
 if errorlevel 1 exit /b 1
 
 if not exist build mkdir build
+if not exist build\openswx mkdir build\openswx
 
 REM 文件名留 fts5 后缀：带不带 FTS5 是两套二进制，避免旧目标文件被误用
 if not exist build\sqlite3_fts5.o (
-  echo [1/3] 编译 SQLite（含 FTS5）...
+  echo [1/6] 编译 SQLite（含 FTS5）...
   gcc -O2 -c third_party/sqlite/sqlite-amalgamation-3450000/sqlite3.c -o build\sqlite3_fts5.o ^
     -DSQLITE_ENABLE_FTS5 ^
     -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_THREADSAFE=1 -DSQLITE_DEFAULT_MEMSTATUS=0 ^
     -DSQLITE_OMIT_DEPRECATED -DSQLITE_DQS=0 -DSQLITE_OMIT_EXPLAIN
   if errorlevel 1 exit /b 1
 ) else (
-  echo [1/3] 复用已有的 build\sqlite3_fts5.o
+  echo [1/6] 复用已有的 build\sqlite3_fts5.o
 )
 
 if not exist build\miniz_zip.o (
-  echo [2/3] 编译 miniz...
+  echo [2/6] 编译 miniz...
   for %%f in (miniz miniz_tdef miniz_tinfl miniz_zip) do (
     gcc -O2 -c third_party\miniz\%%f.c -o build\%%f.o
     if errorlevel 1 exit /b 1
   )
 ) else (
-  echo [2/3] 复用已有的 miniz 目标文件
+  echo [2/6] 复用已有的 miniz 目标文件
 )
 
-echo [3/3] 编译资源与主程序...
+REM openswx 是 C++20 库，必须单独用 -std=c++20 编；主程序也用 C++20
+if not exist build\openswx\document.o (
+  echo [3/6] 编译 openswx（SolidWorks 解析，C++20）...
+  g++ -O2 -std=c++20 -c third_party\pugixml\pugixml.cpp -o build\openswx\pugixml.o ^
+    -I third_party\pugixml -I third_party\zlibshim -I third_party\miniz
+  if errorlevel 1 exit /b 1
+  g++ -O2 -std=c++20 -c third_party\openswx\src\document.cc -o build\openswx\document.o ^
+    -I third_party\openswx\include -I third_party\openswx\src ^
+    -I third_party\pugixml -I third_party\zlibshim -I third_party\miniz
+  if errorlevel 1 exit /b 1
+  for %%f in (decompressor modern_parser ole2_parser reference_reader sheet_name_reader xml_readers) do (
+    g++ -O2 -std=c++20 -c third_party\openswx\src\internal\%%f.cc -o build\openswx\%%f.o ^
+      -I third_party\openswx\include -I third_party\openswx\src ^
+      -I third_party\pugixml -I third_party\zlibshim -I third_party\miniz
+    if errorlevel 1 exit /b 1
+  )
+) else (
+  echo [3/6] 复用已有的 openswx 目标文件
+)
+
+echo [4/6] 编译资源...
 windres src\app.rc -o build\app_res.o
 if errorlevel 1 exit /b 1
 
-g++ -O2 -std=c++17 -static -s -mwindows ^
+echo [5/6] 编译主程序...
+g++ -O2 -std=c++20 -static -s -mwindows ^
   -I third_party/imgui -I third_party/imgui/backends ^
   -I third_party/sqlite/sqlite-amalgamation-3450000 -I third_party/miniz ^
-  -I third_party/pdfium/include -I src ^
+  -I third_party/pdfium/include -I third_party/openswx/include -I src ^
   src/main.cpp src/db.cpp src/rules.cpp src/extract.cpp src/content.cpp src/external.cpp ^
-  build\sqlite3_fts5.o build\miniz.o build\miniz_tdef.o build\miniz_tinfl.o build\miniz_zip.o ^
-  build\app_res.o ^
+  build/sqlite3_fts5.o ^
+  build/miniz.o build/miniz_tdef.o build/miniz_tinfl.o build/miniz_zip.o ^
+  build/openswx/pugixml.o build/openswx/document.o build/openswx/decompressor.o ^
+  build/openswx/modern_parser.o build/openswx/ole2_parser.o ^
+  build/openswx/reference_reader.o build/openswx/sheet_name_reader.o ^
+  build/openswx/xml_readers.o ^
+  build/app_res.o ^
   third_party/imgui/imgui.cpp third_party/imgui/imgui_draw.cpp ^
   third_party/imgui/imgui_tables.cpp third_party/imgui/imgui_widgets.cpp ^
   third_party/imgui/backends/imgui_impl_win32.cpp third_party/imgui/backends/imgui_impl_dx11.cpp ^
@@ -49,23 +76,32 @@ g++ -O2 -std=c++17 -static -s -mwindows ^
   -o build\SpaceSift.exe
 if errorlevel 1 exit /b 1
 
+echo [6/6] 收集运行时依赖...
 REM 可选依赖：DWG 靠 dwg2dxf.exe（LibreDWG，GPLv3）+ libredwg-0.dll（~32 MB）
-REM 把它们放在 third_party\libredwg\ 下就会被自动带上；没有就跳过 .dwg
 if exist third_party\libredwg\dwg2dxf.exe (
   copy /y third_party\libredwg\dwg2dxf.exe build\ >nul
   copy /y third_party\libredwg\libredwg-0.dll build\ >nul
   copy /y third_party\libredwg\libiconv-2.dll build\ >nul
-  echo [4/5] 已带上 DWG 转换器（LibreDWG）
+  echo    + DWG 转换器（LibreDWG）
 ) else (
-  echo [4/5] 没有 third_party\libredwg，.dwg 不参与索引
+  echo    - 没有 third_party\libredwg，.dwg 不参与索引
 )
 
-REM PDF 支持靠运行时的 pdfium.dll（7.8 MB），没有它也能跑，只是搜不到 PDF 正文
+REM PDF 靠运行时的 pdfium.dll（7.8 MB）
 if exist third_party\pdfium\bin\pdfium.dll (
   copy /y third_party\pdfium\bin\pdfium.dll build\ >nul
-  echo [5/5] 已复制 pdfium.dll（PDF 内容检索可用）
+  echo    + pdfium.dll（PDF）
 ) else (
-  echo [5/5] 未找到 pdfium.dll，PDF 不参与索引
+  echo    - 未找到 pdfium.dll，PDF 不参与索引
+)
+
+REM OCR 语言包放 build\tessdata（没有就用系统装的 Tesseract）
+if exist third_party\tessdata (
+  if not exist build\tessdata mkdir build\tessdata
+  copy /y third_party\tessdata\*.traineddata build\tessdata\ >nul
+  echo    + tessdata 语言包（OCR）
+) else (
+  echo    - 没有 third_party\tessdata，OCR 用系统安装的 Tesseract
 )
 
 echo.
