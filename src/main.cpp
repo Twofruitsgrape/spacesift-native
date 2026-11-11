@@ -1893,16 +1893,16 @@ static void DrawContentSearchTab() {
         {
             static bool ocrDirty = false;
             bool ocr = extract::OcrReady();
-            if (ImGui::Checkbox("OCR 扫描件/图片（慢）", &ocr)) {
+            if (ImGui::Checkbox("OCR 图片（截图/照片，慢）", &ocr)) {
                 extract::SetOcrEnabled(ocr);
                 ocrDirty = true;      // 开关变了要整库重建，否则旧的"抽空"记录不会重试
             }
             if (ocrDirty && content::HasIndex(g_rootPath))
                 ImGui::TextDisabled("设置已改变 —— 点下面的「增量更新」重新索引。");
             if (!extract::OcrAvailable())
-                ImGui::TextDisabled("（需要安装 Tesseract-OCR 才能启用）");
-            else if (ocr)
-                ImGui::TextDisabled("每张图约 1–2 秒；只对需要的目录开。");
+                ImGui::TextDisabled("（扫描件 PDF 需装 Tesseract-OCR 才会自动识别）");
+            else
+                ImGui::TextDisabled("扫描件 PDF 自动识别（每次最多 120 页）；这个开关只管图片。");
         }
         return;
     }

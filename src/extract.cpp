@@ -6,6 +6,7 @@
 #include <cctype>
 #include <cstdlib>
 #include <cstring>
+#include <atomic>
 #include <vector>
 
 #include "miniz.h"
@@ -22,6 +23,9 @@ namespace extract {
 bool LooksLikeGarbage(const std::string& t);   // 定义在后面
 
 namespace {
+
+// 每次建索引最多 OCR 这么多页（约 2–3 分钟），用完就不再识别，下次接着做
+std::atomic<int> g_ocrBudget{120};
 
 bool IsTextExt(const std::string& e) {
     static const char* kExts[] = {
@@ -942,7 +946,7 @@ std::string PdfText(const std::string& path) {
     std::string out;
     const int pages = api.GetPageCount(doc);
     const int kMaxPages = 300;          // 手册类 PDF 动辄上千页，截到前 300 页
-    const bool canOcr = OcrReady();
+    const bool canOcr = OcrAvailable() && g_ocrBudget.load() > 0;
     int ocrPages = 0;
     // 有些扫描件带一层坏 OCR 文本层：每页只有几十个字形索引字符，
     // 单页看不出来，但整篇拼起来就能判定。判定成立后清空已抽内容、改走 OCR。
@@ -975,6 +979,7 @@ std::string PdfText(const std::string& path) {
             std::string ocr = OcrPdfPage(api, page);
             if (!ocr.empty()) {
                 ++ocrPages;
+                --g_ocrBudget;
                 if (ocr.size() > kStoreCap) ocr.resize(kStoreCap);
                 Append(out, ocr);
             }
@@ -992,6 +997,7 @@ std::string PdfText(const std::string& path) {
             if (!page) continue;
             std::string ocr = OcrPdfPage(api, page);
             if (!ocr.empty()) {
+                --g_ocrBudget;
                 if (ocr.size() > kStoreCap) ocr.resize(kStoreCap);
                 Append(out, ocr);
             }
@@ -1515,12 +1521,14 @@ bool LegacyReady() {
 }
 bool ArchiveReady() { return !FindArchiver(nullptr).empty(); }
 namespace {
-bool g_ocrEnabled = false;   // 默认关闭：一张图 OCR 要 1–2 秒，全盘扫会拖死
+bool g_ocrEnabled = false;    // 只管图片
 }
 
 bool OcrAvailable() { return !FindTool(L"tesseract.exe").empty(); }
 void SetOcrEnabled(bool on) { g_ocrEnabled = on; }
 bool OcrReady() { return g_ocrEnabled && OcrAvailable(); }
+int  OcrBudgetLeft() { return g_ocrBudget.load(); }
+void ResetOcrBudget() { g_ocrBudget = 120; }
 
 // 抽出来一堆 ? 或控制字符 → 说明字体映射坏了，宁可不入库也别塞垃圾
 bool LooksLikeGarbage(const std::string& t) {

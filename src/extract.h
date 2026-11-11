@@ -39,8 +39,14 @@ bool ArchiveReady();
 // 扫描件/截图 OCR 靠外部 tesseract.exe（装了才有）
 // OCR 比其它抽取慢两个数量级（每张图 1–2 秒），所以默认关闭，由界面开关控制。
 bool OcrAvailable();          // tesseract 装没装
-void SetOcrEnabled(bool on);  // 用户开关
+void SetOcrEnabled(bool on);  // 只管图片（截图/照片）；扫描件 PDF 自动 OCR
 bool OcrReady();              // 可用且已启用
+
+// OCR 时间预算：扫描件 PDF 自动 OCR，但每次建索引最多做这么多页，
+// 免得一个全是扫描件的目录把首次索引拖成几十分钟。
+// 预算用完的文件不写库，下次建索引会接着做。
+int  OcrBudgetLeft();
+void ResetOcrBudget();
 
 // UTF-8 <-> 宽字符（Win32 路径用）
 std::wstring ToWide(const std::string& utf8);

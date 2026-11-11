@@ -48,7 +48,8 @@
 | PDF | `pdfium.dll` 放 exe 同目录 | 7.8 MB |
 | DWG | `dwg2dxf.exe` + `libredwg-0.dll` + `libiconv-2.dll`（LibreDWG，GPLv3） | 32 MB |
 | DWG（更准） | ODA File Converter（自动探测注册表/Program Files） | — |
-| 扫描件/图片 OCR | Tesseract-OCR + 语言包放 `tessdata/` | 16.7 MB |
+| 扫描件 PDF 自动 OCR | Tesseract-OCR + 语言包放 `tessdata/` | 16.7 MB |
+| 图片 OCR（截图/照片） | 同上，另需勾选「OCR 图片」 | — |
 | 旧版 Office | catdoc 系列 或 LibreOffice（可选，没有也能读中文） | — |
 | rar / 7z | WinRAR 或 7-Zip（从注册表/Program Files 自动找） | — |
 
@@ -92,7 +93,9 @@
 
 - **单文件正文最多 64 KB**，超出的部分搜不到（索引体积换来的）
 - **超过 256 MB 的文件跳过**（zip/mph 除外，它们是流式读的）
-- **OCR 默认关闭**：一张图 1–2 秒，全盘开会把 42 秒变成 25 分钟。只对需要的目录勾选
+- **扫描件 PDF 自动 OCR**：无文本层或文本层是坏的（扫描软件生成的假 OCR 层）都会自动渲染识别，
+  每次建索引最多 120 页（约 2–3 分钟）；超出的文件不写库，下次建索引接着做
+- **图片 OCR 默认关闭**：截图/照片大多是噪音，且一张 1–2 秒，勾选后才做
 - **扫描件 PDF 需要 OCR 才有文字**，默认关闭时这类文件会被记为"抽空"
 - `.7z/.rar` 只索引**条目名**，不抽里面的正文（逐条解压太慢）
 - `.mph` 只读模型树/参数/物理场，**不读网格与求解结果**（那是二进制，且无文字）

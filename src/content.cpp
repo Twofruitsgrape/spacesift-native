@@ -352,6 +352,7 @@ std::string LastError() {
 }
 
 void ResetProgress() {
+    extract::ResetOcrBudget();
     g_seen = 0;
     g_done = 0;
     g_parsed = 0;
@@ -446,6 +447,11 @@ void Build(const std::string& root, const std::atomic<bool>& cancel) {
 
              const std::string ext = extract::LowerExt(full);
              std::string txt = extract::Text(full, ext);
+             // OCR 预算用完导致没抽到正文 → 不写库，下次建索引还会重试
+             if (txt.empty() && extract::OcrBudgetLeft() <= 0) {
+                 g_done.fetch_add(1);
+                 continue;
+             }
              const int err = txt.empty() ? 1 : 0;
              // token 数当“文档长度”：排序时短文档命中更可信
              const std::string tokens = err ? std::string() : FtsTokens(txt);
