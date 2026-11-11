@@ -25,3 +25,8 @@ pdfium.tgz
 
 # LibreDWG 只在做 DWG 插件时本地解压用，不进仓库
 third_party/libredwg/
+
+# openswx/pugixml/zlibshim：评估过但未接入（需要 libopenparasolid 全套，代价过高）
+third_party/openswx/
+third_party/pugixml/
+third_party/zlibshim/

@@ -122,6 +122,8 @@ int main() {
                "ENDSEC;\nDATA;\n"
                "#1 = CARTESIAN_POINT('',(0.,0.,0.));\n"
                "#42 = PRODUCT('法兰盘','法兰盘','',(#43));\n"
+               // STEP 把非 ASCII 写成 \X2\<UTF-16 hex>\X0\，不还原就搜不到中文
+               "#43 = PRODUCT('\\X2\\52A070ED9488\\X0\\','x','',(#44));\n"
                "ENDSEC;\nEND-ISO-10303-21;\n");
     // 7) P4：DWG（靠外部 dwg2dxf.exe）——没转换器就跳过这一段
     const bool dwg = extract::DwgReady();
@@ -173,6 +175,7 @@ int main() {
         {"\\d.dxf",    "螺栓M8"},
         {"\\p.step",   "法兰盘"},
         {"\\p.step",   "装配总成"},
+        {"\\p.step",   "加热针"},          // \X2\ 转义的中文
         {"\\o.obj",    "支架组"},
         {"\\c.docx",   "关键词戊"},
         {"\\c.docx",   "中&"},              // 实体解码 \u0026#x4E2D; 和 &amp;
@@ -213,6 +216,7 @@ int main() {
         {"关键词丙", "d.dxf"},
         {"法兰盘3寸", "d.dxf"},     // 属性块里的值
         {"装配总成", "p.step"},     // FILE_NAME
+        {"加热针", "p.step"},       // STEP \X2\ 转义（加热针）
         {"支架组", "o.obj"},
         {"关键词戊", "c.docx"},     // OOXML 正文
         {"关键词己", "s.xlsx"},     // sharedStrings

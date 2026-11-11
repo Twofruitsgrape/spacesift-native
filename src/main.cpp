@@ -1860,6 +1860,8 @@ static void DrawContentSearchTab() {
             ImGui::TextDisabled("提示：.doc/.ppt/.xls 需要 catdoc 系列或 LibreOffice。");
         if (!extract::ArchiveReady())
             ImGui::TextDisabled("提示：.7z/.rar 需要安装 7-Zip 或 WinRAR。");
+        if (!extract::OcrReady())
+            ImGui::TextDisabled("提示：扫描件/截图 OCR 需要安装 Tesseract-OCR。");
         return;
     }
     if (g_hits.empty()) {

@@ -33,6 +33,9 @@ bool DwgReady();
 bool LegacyReady();
 bool ArchiveReady();
 
+// 扫描件/截图 OCR 靠外部 tesseract.exe（装了才有）
+bool OcrReady();
+
 // UTF-8 <-> 宽字符（Win32 路径用）
 std::wstring ToWide(const std::string& utf8);
 std::string  FromWide(const std::wstring& w);

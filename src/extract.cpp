@@ -3,6 +3,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <cstring>
 #include <vector>
@@ -203,6 +204,69 @@ void Append(std::string& out, const std::string& s) {
 
 // ---- 各格式抽取 ----
 
+void AppendCodepoint(std::string& buf, unsigned long cp);   // 定义在 P2 那段
+
+// STEP（ISO 10303-21）把非 ASCII 写成 \X2\<UTF-16 十六进制>\X0\，
+// 不还原的话「加热针.step」里的中文永远搜不到。
+void AppendUtf16Units(std::string& out, const std::string& hex) {
+    unsigned long hi = 0;
+    for (size_t k = 0; k + 4 <= hex.size(); k += 4) {
+        const unsigned long u = strtoul(hex.substr(k, 4).c_str(), nullptr, 16);
+        if (u >= 0xD800 && u <= 0xDBFF) {
+            hi = u;
+            continue;
+        }
+        if (u >= 0xDC00 && u <= 0xDFFF && hi) {
+            const unsigned long cp = 0x10000 + ((hi - 0xD800) << 10) + (u - 0xDC00);
+            AppendCodepoint(out, cp);
+            hi = 0;
+            continue;
+        }
+        hi = 0;
+        AppendCodepoint(out, u);
+    }
+}
+
+std::string DecodeStepEscapes(const std::string& s) {
+    std::string o;
+    o.reserve(s.size());
+    for (size_t i = 0; i < s.size();) {
+        if (s[i] != '\\') {
+            o.push_back(s[i++]);
+            continue;
+        }
+        // \\ -> 反斜杠本身
+        if (i + 1 < s.size() && s[i + 1] == '\\') {
+            o.push_back('\\');
+            i += 2;
+            continue;
+        }
+        // \Xn\ ... \X0\    n = 1 字节 / 2 UTF-16 / 4 UTF-32
+        if (i + 3 < s.size() && (s[i + 1] == 'X' || s[i + 1] == 'x') && s[i + 3] == '\\') {
+            const char d = s[i + 2];
+            const size_t unit = (d == '1') ? 2 : (d == '2') ? 4 : (d == '4') ? 8 : 0;
+            if (unit != 0) {
+                const size_t end = s.find("\\X0\\", i + 4);
+                const size_t stop = (end == std::string::npos) ? s.size() : end;
+                std::string hex;
+                for (size_t k = i + 4; k < stop; ++k)
+                    if (isxdigit((unsigned char)s[k])) hex.push_back(s[k]);
+
+                if (d == '2') {
+                    AppendUtf16Units(o, hex);
+                } else {
+                    for (size_t k = 0; k + unit <= hex.size(); k += unit)
+                        AppendCodepoint(o, strtoul(hex.substr(k, unit).c_str(), nullptr, 16));
+                }
+                i = (end == std::string::npos) ? s.size() : end + 4;
+                continue;
+            }
+        }
+        o.push_back(s[i++]);   // 其他转义（\S\ \P?\ \N\）原样保留
+    }
+    return o;
+}
+
 // .step / .stp：坐标数字占 95%，真正可搜的是单引号里的名字
 //   #42 = PRODUCT('法兰盘 3寸','flange','',(#43));
 std::string StepStrings(const std::string& path) {
@@ -225,7 +289,7 @@ std::string StepStrings(const std::string& path) {
         }
         if (inQuote) cur.push_back(' ');   // 跨行的字符串保留成一段
     }
-    return out;
+    return DecodeStepEscapes(out);
 }
 
 // .dxf：按 group code 走状态机。坐标是 code 10/20/30，不用管；
@@ -867,6 +931,22 @@ std::string ArchiveText(const std::string& path) {
     return names;
 }
 
+// ======================= 扫描件/截图 OCR（外部 tesseract）=======================
+
+std::string OcrText(const std::string& path) {
+    const std::wstring exe = FindTool(L"tesseract.exe");
+    if (exe.empty()) return {};
+    const std::wstring src = ToWide(path);
+    std::string out;
+    // 先试中英双语包；机器上没装 chi_sim 会失败，退回默认英文
+    if (external::RunCapture(exe, L"\"" + src + L"\" stdout -l chi_sim+eng", out,
+                             kStoreCap, 120000))
+        return out;
+    out.clear();
+    external::RunCapture(exe, L"\"" + src + L"\" stdout", out, kStoreCap, 120000);
+    return out;
+}
+
 }  // namespace
 
 std::wstring ToWide(const std::string& utf8) {
@@ -908,6 +988,9 @@ bool Supports(const std::string& ext) {
     if (ext == ".dwg") return DwgReady();
     if (ext == ".doc" || ext == ".ppt" || ext == ".xls") return LegacyReady();
     if (ext == ".7z" || ext == ".rar") return ArchiveReady();
+    if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" ||
+        ext == ".tif" || ext == ".tiff")
+        return OcrReady();
     return false;
 }
 
@@ -919,6 +1002,7 @@ bool LegacyReady() {
            !FindSoffice().empty();
 }
 bool ArchiveReady() { return !FindArchiver(nullptr).empty(); }
+bool OcrReady() { return !FindTool(L"tesseract.exe").empty(); }
 
 // 截到完整 UTF-8 字符边界：Append 按字节封顶，末尾可能剩半个字
 static std::string DecodeAndTrim(const std::string& raw) {
@@ -943,6 +1027,9 @@ std::string Text(const std::string& path, const std::string& ext) {
     if (ext == ".dwg") return DecodeAndTrim(DwgText(path));
     if (ext == ".doc" || ext == ".ppt" || ext == ".xls") return DecodeAndTrim(LegacyText(path, ext));
     if (ext == ".7z" || ext == ".rar") return DecodeAndTrim(ArchiveText(path));
+    if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" ||
+        ext == ".tif" || ext == ".tiff")
+        return DecodeAndTrim(OcrText(path));
 
     std::string raw;
     if (ext == ".dxf") {

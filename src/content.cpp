@@ -36,6 +36,34 @@ bool Exec(sqlite3* db, const char* sql) {
     return db && sqlite3_exec(db, sql, nullptr, nullptr, nullptr) == SQLITE_OK;
 }
 
+// 抽取器逻辑一改，旧正文就不能信了；这个值一改就整库重建
+const char* kExtractVersion = "2";
+
+std::string MetaGet(sqlite3* db, const char* key) {
+    std::string out;
+    sqlite3_stmt* st = nullptr;
+    if (sqlite3_prepare_v2(db, "SELECT value FROM meta WHERE key=?", -1, &st, nullptr) == SQLITE_OK) {
+        sqlite3_bind_text(st, 1, key, -1, SQLITE_STATIC);
+        if (sqlite3_step(st) == SQLITE_ROW) {
+            const unsigned char* t = sqlite3_column_text(st, 0);
+            if (t) out = (const char*)t;
+        }
+        sqlite3_finalize(st);
+    }
+    return out;
+}
+
+void MetaPut(sqlite3* db, const char* key, const std::string& val) {
+    sqlite3_stmt* st = nullptr;
+    if (sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO meta(key,value) VALUES(?,?)",
+                           -1, &st, nullptr) == SQLITE_OK) {
+        sqlite3_bind_text(st, 1, key, -1, SQLITE_STATIC);
+        sqlite3_bind_text(st, 2, val.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_step(st);
+        sqlite3_finalize(st);
+    }
+}
+
 int64_t FtToUnix(const FILETIME& ft) {
     ULARGE_INTEGER u;
     u.LowPart = ft.dwLowDateTime;
@@ -194,6 +222,12 @@ void Build(const std::string& root, const std::atomic<bool>& cancel) {
          "mtime INTEGER,ext TEXT,text TEXT,err INTEGER DEFAULT 0);");
     Exec(db, "CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT);");
 
+    // 抽取逻辑升级过（比如修了 STEP 的 \X2\ 转义）→ 旧正文全部作废重建
+    if (MetaGet(db, "extract_version") != kExtractVersion) {
+        Exec(db, "DELETE FROM docs;");
+        MetaPut(db, "extract_version", kExtractVersion);
+    }
+
     sqlite3_stmt* qry = nullptr;
     sqlite3_stmt* ins = nullptr;
     sqlite3_prepare_v2(db, "SELECT size,mtime FROM docs WHERE path=?", -1, &qry, nullptr);
@@ -264,6 +298,7 @@ void Build(const std::string& root, const std::atomic<bool>& cancel) {
             put("built_at", std::to_string((long long)time(nullptr)));
             put("partial", cancel.load() ? "1" : "0");
             put("version", "1");
+            put("extract_version", kExtractVersion);
             sqlite3_finalize(st);
         }
     }
