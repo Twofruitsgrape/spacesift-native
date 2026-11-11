@@ -1860,8 +1860,14 @@ static void DrawContentSearchTab() {
             ImGui::TextDisabled("提示：.doc/.ppt/.xls 需要 catdoc 系列或 LibreOffice。");
         if (!extract::ArchiveReady())
             ImGui::TextDisabled("提示：.7z/.rar 需要安装 7-Zip 或 WinRAR。");
-        if (!extract::OcrReady())
-            ImGui::TextDisabled("提示：扫描件/截图 OCR 需要安装 Tesseract-OCR。");
+        {
+            bool ocr = extract::OcrReady();
+            if (ImGui::Checkbox("OCR 扫描件/图片（慢）", &ocr)) extract::SetOcrEnabled(ocr);
+            if (!extract::OcrAvailable())
+                ImGui::TextDisabled("（需要安装 Tesseract-OCR 才能启用）");
+            else if (ocr)
+                ImGui::TextDisabled("每张图约 1–2 秒；只对需要的目录开。");
+        }
         return;
     }
     if (g_hits.empty()) {

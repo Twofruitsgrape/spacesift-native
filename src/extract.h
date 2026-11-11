@@ -37,7 +37,10 @@ bool LegacyReady();
 bool ArchiveReady();
 
 // 扫描件/截图 OCR 靠外部 tesseract.exe（装了才有）
-bool OcrReady();
+// OCR 比其它抽取慢两个数量级（每张图 1–2 秒），所以默认关闭，由界面开关控制。
+bool OcrAvailable();          // tesseract 装没装
+void SetOcrEnabled(bool on);  // 用户开关
+bool OcrReady();              // 可用且已启用
 
 // UTF-8 <-> 宽字符（Win32 路径用）
 std::wstring ToWide(const std::string& utf8);

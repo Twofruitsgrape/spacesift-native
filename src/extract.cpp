@@ -1491,7 +1491,13 @@ bool LegacyReady() {
            !FindSoffice().empty();
 }
 bool ArchiveReady() { return !FindArchiver(nullptr).empty(); }
-bool OcrReady() { return !FindTool(L"tesseract.exe").empty(); }
+namespace {
+bool g_ocrEnabled = false;   // 默认关闭：一张图 OCR 要 1–2 秒，全盘扫会拖死
+}
+
+bool OcrAvailable() { return !FindTool(L"tesseract.exe").empty(); }
+void SetOcrEnabled(bool on) { g_ocrEnabled = on; }
+bool OcrReady() { return g_ocrEnabled && OcrAvailable(); }
 
 // 截到完整 UTF-8 字符边界：Append 按字节封顶，末尾可能剩半个字
 static std::string DecodeAndTrim(const std::string& raw) {
