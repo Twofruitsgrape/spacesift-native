@@ -34,7 +34,8 @@ if errorlevel 1 exit /b 1
 
 g++ -O2 -std=c++17 -static -s -mwindows ^
   -I third_party/imgui -I third_party/imgui/backends ^
-  -I third_party/sqlite/sqlite-amalgamation-3450000 -I third_party/miniz -I src ^
+  -I third_party/sqlite/sqlite-amalgamation-3450000 -I third_party/miniz ^
+  -I third_party/pdfium/include -I src ^
   src/main.cpp src/db.cpp src/rules.cpp src/extract.cpp src/content.cpp ^
   build\sqlite3.o build\miniz.o build\miniz_tdef.o build\miniz_tinfl.o build\miniz_zip.o ^
   build\app_res.o ^
@@ -44,6 +45,14 @@ g++ -O2 -std=c++17 -static -s -mwindows ^
   -ld3d11 -ldxgi -ld3dcompiler -ldwmapi -lgdi32 -luser32 -lshell32 -lole32 -limm32 ^
   -o build\SpaceSift.exe
 if errorlevel 1 exit /b 1
+
+REM PDF 支持靠运行时的 pdfium.dll（7.8 MB），没有它也能跑，只是搜不到 PDF 正文
+if exist third_party\pdfium\bin\pdfium.dll (
+  copy /y third_party\pdfium\bin\pdfium.dll build\ >nul
+  echo [4/4] 已复制 pdfium.dll（PDF 内容检索可用）
+) else (
+  echo [4/4] 未找到 pdfium.dll，PDF 不参与索引
+)
 
 echo.
 echo 构建完成: build\SpaceSift.exe

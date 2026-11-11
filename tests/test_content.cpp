@@ -23,6 +23,34 @@ static bool Contains(const std::string& hay, const std::string& needle) {
     return hay.find(needle) != std::string::npos;
 }
 
+// 手搓一个最小 PDF（单页、Type1 Helvetica、纯 ASCII 文本），xref 偏移算准
+static std::string MakePdf(const std::string& text) {
+    std::string objs[6];
+    objs[1] = "<< /Type /Catalog /Pages 2 0 R >>";
+    objs[2] = "<< /Type /Pages /Kids [3 0 R] /Count 1 >>";
+    objs[3] = "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 120] "
+              "/Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>";
+    const std::string stream = "BT /F1 20 Tf 20 60 Td (" + text + ") Tj ET";
+    objs[4] = "<< /Length " + std::to_string(stream.size()) + " >>\nstream\n" +
+              stream + "\nendstream";
+    objs[5] = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>";
+
+    std::string out = "%PDF-1.4\n";
+    std::string off[6];
+    for (int i = 1; i <= 5; ++i) {
+        char b[32];
+        snprintf(b, sizeof b, "%010zu", out.size());
+        off[i] = b;
+        out += std::to_string(i) + " 0 obj\n" + objs[i] + "\nendobj\n";
+    }
+    const size_t xrefPos = out.size();
+    out += "xref\n0 6\n0000000000 65535 f \n";
+    for (int i = 1; i <= 5; ++i) out += off[i] + " 00000 n \n";
+    out += "trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n" +
+           std::to_string(xrefPos) + "\n%%EOF\n";
+    return out;
+}
+
 static void WriteBytes(const std::wstring& path, const std::string& data) {
     HANDLE h = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
                            FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -32,8 +60,7 @@ static void WriteBytes(const std::wstring& path, const std::string& data) {
     CloseHandle(h);
 }
 
-static std::string Gbk(const char* utf8) {
-    int n = MultiByteToWideChar(CP_UTF8, 0, utf8, -1, nullptr, 0);
+static std::string Gbk(const char* utf8) {    int n = MultiByteToWideChar(CP_UTF8, 0, utf8, -1, nullptr, 0);
     std::wstring w((size_t)n, L'\0');
     MultiByteToWideChar(CP_UTF8, 0, utf8, -1, &w[0], n);
     int m = WideCharToMultiByte(936, 0, w.c_str(), -1, nullptr, 0, nullptr, nullptr);
@@ -51,7 +78,8 @@ int main() {
     Check(extract::Supports(".dxf"), "支持 .dxf");
     Check(extract::Supports(".step") && extract::Supports(".stp"), "支持 .step/.stp");
     Check(!extract::Supports(".dwg"), ".dwg 暂不支持（P4）");
-    Check(!extract::Supports(".pdf"), ".pdf 暂不支持（P3）");
+    Check(extract::PdfReady(), "pdfium.dll 已加载（PDF 可检索）");
+    Check(extract::Supports(".pdf"), "支持 .pdf");
     Check(extract::LowerExt("C:\\A\\B.STEP") == ".step", "扩展名转小写");
 
     // 造一个测试目录
@@ -107,6 +135,8 @@ int main() {
         "<p:sld><a:t>汇报要点关键词庚</a:t></p:sld>"}}));
     WriteBytes(dir + L"\\a.zip", makeZip({{"内层说明.md", "压缩包内文本关键词辛"},
                                          {"sub/inner.docx", ""}}));
+    // 7) P3：PDF 文本层
+    WriteBytes(dir + L"\\r.pdf", MakePdf("Hello PDF Keyword Omega"));
 
     std::string dirU8 = extract::FromWide(dir);
     printf("\n--- 抽取结果 ---\n");
@@ -125,6 +155,7 @@ int main() {
         {"\\s.pptx",   "关键词庚"},
         {"\\a.zip",    "内层说明.md"},      // 压缩包条目名
         {"\\a.zip",    "压缩包内文本关键词辛"},   // 压缩包内文本文件
+        {"\\r.pdf",    "Keyword Omega"},      // PDF 文本层
     };
     for (auto& c : cases) {
         std::string p = dirU8 + c.f;
@@ -146,7 +177,7 @@ int main() {
     content::Build(dirU8, cancel);
     printf("已扫描 %d · 已写入 %d\n", content::g_seen.load(), content::g_parsed.load());
     Check(content::HasIndex(dirU8), "索引库已生成");
-    Check(content::g_parsed.load() >= 9, "至少写入 9 个文件");
+    Check(content::g_parsed.load() >= 10, "至少写入 10 个文件");
 
     struct { const char* q; const char* wantName; } queries[] = {
         {"关键词甲", "utf8.txt"},
@@ -159,6 +190,7 @@ int main() {
         {"关键词己", "s.xlsx"},     // sharedStrings
         {"关键词庚", "s.pptx"},     // slide
         {"压缩包内文本关键词辛", "a.zip"},   // zip 内文本
+        {"Keyword Omega", "r.pdf"},        // PDF
     };
     for (auto& q : queries) {
         auto hits = content::Search(dirU8, q.q, 100);

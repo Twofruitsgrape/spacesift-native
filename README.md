@@ -15,6 +15,7 @@
   - Office：`docx docm xlsx xlsm pptx pptm odt ods odp`（直接读 OOXML，不需要装 Office）
   - 图纸：`dxf`（抓 TEXT/MTEXT/ATTRIB 属性块，不吞坐标）
   - 三维：`step stp`（只抓单引号里的零件名/文件名）、`iges igs`、`obj`
+  - PDF：`pdf`（文本层，最多前 300 页；**需要 pdfium.dll 放同目录**，没有就不参与索引）
   - 压缩包：`zip` 的条目名 + 里面的文本/Office 文件（解压总量上限 4 MB）
   - 索引独立成库 `content_<root>.db`，按文件大小+修改时间增量更新，不重复抽取
 - **二次确认** — 任何删除都先弹窗列出清单，确认后才执行，不进回收站
@@ -23,7 +24,7 @@
 
 ## 使用
 
-1. 下载 `SpaceSift.exe`，双击运行（免安装）
+1. 下载 `SpaceSift.exe`（PDF 内容检索额外需要同目录的 `pdfium.dll`），双击运行（免安装）
 2. 选磁盘或输入路径，点「扫描」
 3. 扫描完成后：
    - 左侧点方块，逐层查看空间被谁占了
@@ -41,6 +42,8 @@
 
 索引库放在 `%LOCALAPPDATA%\SpaceSiftNative\content_<根目录>.db`。
 实测 7058 个源码文件：建索引 1.6 秒，库 86 MB，查询 70–140 ms。
+
+发版时记得把 `pdfium.dll` 和 exe 放在一起；不放也能正常用，只是 `.pdf` 不参与内容索引。
 
 脚本化调用（便于自动化测试）：
 

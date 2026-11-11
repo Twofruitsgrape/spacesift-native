@@ -21,6 +21,10 @@ std::string LowerExt(const std::string& path);
 // 抽文本，返回 UTF-8；抽不出来返回空串
 std::string Text(const std::string& path, const std::string& ext);
 
+// PDF 抽取依赖运行时的 pdfium.dll（放 exe 同目录）。
+// 没装也不影响其他格式，只是 .pdf 不参与索引。
+bool PdfReady();
+
 // UTF-8 <-> 宽字符（Win32 路径用）
 std::wstring ToWide(const std::string& utf8);
 std::string  FromWide(const std::wstring& w);

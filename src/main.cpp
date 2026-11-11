@@ -38,6 +38,7 @@
 
 #include "db.h"
 #include "content.h"
+#include "extract.h"
 #include "rules.h"
 
 // ============================================================ 扫描结果
@@ -1851,6 +1852,8 @@ static void DrawContentSearchTab() {
     if (g_searchQuery.empty()) {
         ImGui::TextDisabled("内容索引就绪。在上面搜索框输入关键词即可搜正文。");
         if (GhostButton("增量更新", ImVec2(0, 26))) StartContentIndex();
+        if (!extract::PdfReady())
+            ImGui::TextDisabled("提示：同目录放一个 pdfium.dll 才能搜 PDF 正文。");
         return;
     }
     if (g_hits.empty()) {

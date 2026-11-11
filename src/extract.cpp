@@ -5,8 +5,13 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
+#include <vector>
 
 #include "miniz.h"
+// 只用声明和类型；函数体全部靠 LoadLibrary + GetProcAddress 拿到，
+// 所以没装 pdfium.dll 也能编译、能运行，只是 PDF 不参与索引。
+#include "fpdf_text.h"
+#include "fpdfview.h"
 
 namespace extract {
 namespace {
@@ -450,7 +455,6 @@ std::string OoxmlText(const std::string& path, const std::string& ext) {
     return OoxmlFromMem(data, ext);
 }
 
-// .zip：条目名本身可搜，里面的文本/Office 文件再抽一层（不递归、不套娃）
 std::string ZipStrings(const std::string& path) {
     std::string data;
     if (!ReadAll(path, 512ull * 1024 * 1024, data)) return {};
@@ -500,6 +504,120 @@ std::string ZipStrings(const std::string& path) {
     return out;
 }
 
+// ======================= P3：PDF（pdfium 动态加载）=======================
+
+struct PdfApi {
+    bool    tried = false;
+    bool    ok = false;
+    HMODULE mod = nullptr;
+    decltype(&FPDF_InitLibrary) InitLibrary = nullptr;
+    decltype(&FPDF_LoadCustomDocument) LoadCustom = nullptr;
+    decltype(&FPDF_CloseDocument) CloseDocument = nullptr;
+    decltype(&FPDF_GetPageCount) GetPageCount = nullptr;
+    decltype(&FPDF_LoadPage) LoadPage = nullptr;
+    decltype(&FPDF_ClosePage) ClosePage = nullptr;
+    decltype(&FPDFText_LoadPage) TextLoad = nullptr;
+    decltype(&FPDFText_ClosePage) TextClose = nullptr;
+    decltype(&FPDFText_CountChars) TextCount = nullptr;
+    decltype(&FPDFText_GetText) TextGet = nullptr;
+};
+
+// 只在首次用到 PDF 时加载一次；InitLibrary 会装字体，不能每个文件重来
+PdfApi& Pdf() {
+    static PdfApi api;
+    if (api.tried) return api;
+    api.tried = true;
+
+    api.mod = LoadLibraryW(L"pdfium.dll");
+    if (!api.mod) return api;
+
+    auto sym = [&](const char* n) { return (void*)GetProcAddress(api.mod, n); };
+    api.InitLibrary   = (decltype(api.InitLibrary))sym("FPDF_InitLibrary");
+    api.LoadCustom    = (decltype(api.LoadCustom))sym("FPDF_LoadCustomDocument");
+    api.CloseDocument = (decltype(api.CloseDocument))sym("FPDF_CloseDocument");
+    api.GetPageCount  = (decltype(api.GetPageCount))sym("FPDF_GetPageCount");
+    api.LoadPage      = (decltype(api.LoadPage))sym("FPDF_LoadPage");
+    api.ClosePage     = (decltype(api.ClosePage))sym("FPDF_ClosePage");
+    api.TextLoad      = (decltype(api.TextLoad))sym("FPDFText_LoadPage");
+    api.TextClose     = (decltype(api.TextClose))sym("FPDFText_ClosePage");
+    api.TextCount     = (decltype(api.TextCount))sym("FPDFText_CountChars");
+    api.TextGet       = (decltype(api.TextGet))sym("FPDFText_GetText");
+
+    api.ok = api.InitLibrary && api.LoadCustom && api.CloseDocument && api.GetPageCount &&
+             api.LoadPage && api.ClosePage && api.TextLoad && api.TextClose &&
+             api.TextCount && api.TextGet;
+    if (api.ok) api.InitLibrary();
+    return api;
+}
+
+int PdfGetBlock(void* param, unsigned long position, unsigned char* buf, unsigned long size) {
+    HANDLE h = (HANDLE)param;
+    LARGE_INTEGER li;
+    li.QuadPart = (LONGLONG)position;
+    if (!SetFilePointerEx(h, li, nullptr, FILE_BEGIN)) return 0;
+    DWORD got = 0;
+    if (!ReadFile(h, buf, (DWORD)size, &got, nullptr)) return 0;
+    return (int)got;
+}
+
+// 只抽文本层。扫描件（纯图）拿不到文字，返回空串。
+std::string PdfText(const std::string& path) {
+    PdfApi& api = Pdf();
+    if (!api.ok) return {};
+
+    std::wstring w = ToWide(path);
+    HANDLE h = CreateFileW(w.c_str(), GENERIC_READ,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                           nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return {};
+
+    LARGE_INTEGER sz;
+    if (!GetFileSizeEx(h, &sz) || sz.QuadPart <= 0 || (uint64_t)sz.QuadPart > kSkipAbove) {
+        CloseHandle(h);
+        return {};
+    }
+
+    FPDF_FILEACCESS acc;
+    acc.m_FileLen = (unsigned long)sz.QuadPart;
+    acc.m_GetBlock = PdfGetBlock;
+    acc.m_Param = h;
+
+    // 用自定义读取器而不是 FPDF_LoadDocument，避开中文路径的编码问题
+    FPDF_DOCUMENT doc = api.LoadCustom(&acc, nullptr);
+    if (!doc) {
+        CloseHandle(h);
+        return {};
+    }
+
+    std::string out;
+    const int pages = api.GetPageCount(doc);
+    const int kMaxPages = 300;          // 手册类 PDF 动辄上千页，截到前 300 页
+    for (int i = 0; i < pages && i < kMaxPages && out.size() < kStoreCap; ++i) {
+        FPDF_PAGE page = api.LoadPage(doc, i);
+        if (!page) continue;
+        FPDF_TEXTPAGE tp = api.TextLoad(page);
+        if (tp) {
+            const int n = api.TextCount(tp);
+            if (n > 0) {
+                std::vector<unsigned short> buf((size_t)n + 1, 0);
+                const int got = api.TextGet(tp, 0, n + 1, buf.data());   // 返回值含结尾 0
+                if (got > 1) {
+                    std::string u16((const char*)buf.data(), (size_t)(got - 1) * 2);
+                    std::string u8 = Utf16LeToUtf8(u16);
+                    if (u8.size() > kStoreCap) u8.resize(kStoreCap);
+                    Append(out, u8);
+                }
+            }
+            api.TextClose(tp);
+        }
+        api.ClosePage(page);
+    }
+
+    api.CloseDocument(doc);
+    CloseHandle(h);
+    return out;
+}
+
 }  // namespace
 
 std::wstring ToWide(const std::string& utf8) {
@@ -536,8 +654,11 @@ bool Supports(const std::string& ext) {
     if (ext == ".dxf" || ext == ".step" || ext == ".stp" || ext == ".obj") return true;
     if (IsOoxmlExt(ext)) return true;     // docx/xlsx/pptx/odt...
     if (ext == ".zip") return true;
+    if (ext == ".pdf") return PdfReady();  // 没 pdfium.dll 就不列进来，免得全标成抽取失败
     return false;
 }
+
+bool PdfReady() { return Pdf().ok; }
 
 std::string Text(const std::string& path, const std::string& ext) {
     if (ext == ".dxf") {
@@ -551,6 +672,7 @@ std::string Text(const std::string& path, const std::string& ext) {
         return Strings(path);
     }
     if (ext == ".obj") return ObjStrings(path);
+    if (ext == ".pdf") return PdfText(path);
     if (IsOoxmlExt(ext)) return OoxmlText(path, ext);
     if (ext == ".zip") return ZipStrings(path);
     return PlainText(path);
