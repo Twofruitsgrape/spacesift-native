@@ -59,6 +59,10 @@ std::string DataDir() {
 }
 
 std::string IndexPathFor(const std::string& root) {
+    return IndexPathWithPrefix(root, "index_");
+}
+
+std::string IndexPathWithPrefix(const std::string& root, const char* prefix) {
     // 先归一化（斜杠、尾部反斜杠、盘符冒号），否则同一个目录
     // 扫 "...\AppData" 和 "...\AppData\" 会建出两份 70 MB 的库。
     std::string norm = root;
@@ -72,7 +76,7 @@ std::string IndexPathFor(const std::string& root) {
         else safe.push_back('_');
     }
     if (safe.size() > 40) safe.resize(40);
-    return DataDir() + "\\index_" + safe + ".db";
+    return DataDir() + "\\" + prefix + safe + ".db";
 }
 
 static bool Exec(const char* sql) {

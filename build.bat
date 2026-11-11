@@ -21,7 +21,8 @@ if errorlevel 1 exit /b 1
 g++ -O2 -std=c++17 -static -s -mwindows ^
   -I third_party/imgui -I third_party/imgui/backends ^
   -I third_party/sqlite/sqlite-amalgamation-3450000 -I src ^
-  src/main.cpp src/db.cpp src/rules.cpp build/sqlite3.o build/app_res.o ^
+  src/main.cpp src/db.cpp src/rules.cpp src/extract.cpp src/content.cpp ^
+  build/sqlite3.o build/app_res.o ^
   third_party/imgui/imgui.cpp third_party/imgui/imgui_draw.cpp ^
   third_party/imgui/imgui_tables.cpp third_party/imgui/imgui_widgets.cpp ^
   third_party/imgui/backends/imgui_impl_win32.cpp ^

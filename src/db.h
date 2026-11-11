@@ -15,10 +15,15 @@ struct Hit {
     std::string name;
     uint64_t size = 0;
     bool isDir = false;
+    // 内容检索命中时的正文片段；文件名检索留空
+    std::string snippet;
+    bool content = false;
 };
 
 // 每个盘/目录一份库，放在 %LOCALAPPDATA%/SpaceSiftNative 下
 std::string IndexPathFor(const std::string& root);
+// 同一套命名规则，换成别的前缀（内容索引靠它拿到 content_<root>.db）
+std::string IndexPathWithPrefix(const std::string& root, const char* prefix);
 std::string DataDir();
 
 // 删除超过 keepDays 没更新的索引库，以及中断残留的 .building 临时文件。

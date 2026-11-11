@@ -37,6 +37,7 @@
 #pragma comment(lib, "ole32.lib")
 
 #include "db.h"
+#include "content.h"
 #include "rules.h"
 
 // ============================================================ 扫描结果
@@ -127,6 +128,10 @@ static std::atomic<bool> g_cleanFinish{false};
 
 static std::vector<db::Hit> g_hits;
 static std::string          g_searchQuery;
+// 检索模式：0 = 文件名（走 index_*.db），1 = 文件内容（走 content_*.db）
+static int                 g_searchMode = 0;
+static std::atomic<bool>   g_contentBusy{false};   // UI 侧镜像，防止重复起线程
+static std::atomic<bool>   g_contentCancel{false};
 
 static int  g_current = -1;
 static char g_pathBuf[512] = "C:\\";
@@ -1526,6 +1531,11 @@ static void RunSearchNow(const std::string& query) {
     g_searchQuery = query;
     g_hits.clear();
     if (query.empty()) return;
+    if (g_searchMode == 1) {
+        // 内容索引是独立库；没建过就直接返回空，由右栏引导去建
+        g_hits = content::Search(g_rootPath, query, 400);
+        return;
+    }
     std::string indexPath = db::IndexPathFor(g_rootPath);
     if (GetFileAttributesW(Utf8ToWide(indexPath).c_str()) == INVALID_FILE_ATTRIBUTES) return;
     db::OpenExisting(indexPath);
@@ -1786,6 +1796,81 @@ static uint64_t ScopedRuleSize(const rules::Finding& f) {
     return s;
 }
 
+// ============================================================ 内容检索
+
+// 索引建在扫描根目录对应的库里；扫描线程和索引线程互斥
+static void StartContentIndex() {
+    if (g_scanning.load() || g_contentBusy.load()) return;
+    g_contentCancel = false;
+    g_contentBusy = true;
+    content::ResetProgress();
+    std::string root = g_rootPath;
+    std::thread([root] {
+        content::Build(root, g_contentCancel);
+        g_contentBusy = false;
+    }).detach();
+}
+
+static void DrawContentSearchTab() {
+    // 建完之后如果搜索框里还有词，自动补一次查询
+    static bool prevBusy = false;
+    const bool busyNow = g_contentBusy.load();
+    if (prevBusy && !busyNow && g_searchMode == 1 && g_searchBuf[0]) {
+        RunSearchNow(g_searchBuf);
+        g_mode = 2;
+    }
+    prevBusy = busyNow;
+
+    if (busyNow) {
+        ImGui::TextDisabled("正在建立内容索引…");
+        ImGui::TextDisabled("已扫描 %d 个可抽取文件 · 已写入 %d 个",
+                            content::g_seen.load(), content::g_parsed.load());
+        std::string cur = content::CurrentPath();
+        if (cur.size() > 56) cur = "…" + cur.substr(cur.size() - 55);
+        if (!cur.empty()) ImGui::TextDisabled("%s", cur.c_str());
+        ImGui::Dummy(ImVec2(0, 4));
+        if (GhostButton("停止", ImVec2(64, 26))) g_contentCancel = true;
+        return;
+    }
+
+    if (!content::HasIndex(g_rootPath)) {
+        ImGui::Dummy(ImVec2(0, 2));
+        ImGui::TextDisabled("还没有内容索引。");
+        ImGui::TextDisabled("只抽文本/代码、DXF、STEP/IGES/OBJ；建一次，之后按大小和时间增量更新。");
+        ImGui::Dummy(ImVec2(0, 6));
+        const bool blocked = g_scanning.load();
+        if (blocked) ImGui::BeginDisabled();
+        if (PrimaryButton("建立内容索引", ImVec2(0, 30))) StartContentIndex();
+        if (blocked) ImGui::EndDisabled();
+        if (blocked) ImGui::TextDisabled("扫描进行中，等扫描结束后再建。");
+        std::string err = content::LastError();
+        if (!err.empty()) ImGui::TextDisabled("%s", err.c_str());
+        return;
+    }
+
+    if (g_searchQuery.empty()) {
+        ImGui::TextDisabled("内容索引就绪。在上面搜索框输入关键词即可搜正文。");
+        if (GhostButton("增量更新", ImVec2(0, 26))) StartContentIndex();
+        return;
+    }
+    if (g_hits.empty()) {
+        ImGui::TextDisabled("没有文件内容匹配「%s」。", g_searchQuery.c_str());
+        return;
+    }
+    ImGui::TextDisabled("内容命中 %d 项（按修改时间排序，勾选可加入待清理）", (int)g_hits.size());
+    for (auto& hit : g_hits) {
+        bool was = g_hitSelected.count(hit.path) > 0;
+        bool now = was;
+        std::string sz = FormatBytes(hit.size);
+        RowCard(hit.path.c_str(), hit.name, sz, &now, "", hit.path,
+                hit.snippet.empty() ? ShortParent(hit.path) : hit.snippet);
+        if (now != was) {
+            if (now) g_hitSelected[hit.path] = hit.size;
+            else g_hitSelected.erase(hit.path);
+        }
+    }
+}
+
 static void DrawRightPanel() {
     // ---- 标签行：三个页签在左，两个批量按钮贴右
     static const char* tabLabels[] = {"推荐清理", "深度清理", "检索结果"};
@@ -1918,6 +2003,8 @@ static void DrawRightPanel() {
                                     (int)g_currentFiles.size(), g_currentFileTotal);
             }
         }
+    } else if (g_searchMode == 1) {
+        DrawContentSearchTab();
     } else {
         if (g_searchQuery.empty()) {
             ImGui::TextDisabled("在上面搜索框输入文件名。");
@@ -2046,6 +2133,8 @@ static void ProbeVolume(const std::string& root) {
 
 static void StartScan(const std::string& root) {
     if (g_scanning.load()) return;
+    // 内容索引和扫描互斥：新扫描开始先把索引线程叫停
+    g_contentCancel = true;
     // 新扫描一开始，旧检测的结果全部作废（旧线程即使还在跑也写不进界面）
     RequestDetectCancel();
     ++g_detectGen;
@@ -2085,6 +2174,7 @@ static void StartScan(const std::string& root) {
 }
 
 static std::string g_pendingSearch;   // 来自 SPACESIFT_SEARCH，扫完后自动执行
+static bool        g_pendingContent = false;   // 来自 SPACESIFT_CONTENT，扫完后自动建内容索引
 
 // ============================================================ 顶栏 / 状态条
 
@@ -2166,6 +2256,9 @@ static void DrawStatusStrip() {
         if (cur.size() > 58) cur = "…" + cur.substr(cur.size() - 57);
         right = "扫描中 · " + std::to_string(g_visited.load()) + " 目录 · " + cur;
         rightColor = g_ui.textDim;
+    } else if (g_contentBusy.load()) {
+        right = "建立内容索引 · 已写入 " + std::to_string(content::g_parsed.load()) + " 个 …";
+        rightColor = g_ui.warning;
     } else if (g_detecting.load()) {
         right = GetDetectMsg();
         rightColor = g_ui.textDim;
@@ -2288,8 +2381,24 @@ static void DrawUI() {
     }
     ImGui::SameLine();
 
-    ImGui::SetNextItemWidth(250);
-    bool go = ImGui::InputTextWithHint("##search", "搜索文件...", g_searchBuf, sizeof g_searchBuf,
+    {
+        static const char* searchModeLabels[] = {"文件名", "内容"};
+        int m = Segmented("smode", searchModeLabels, 2, g_searchMode, 30.0f);
+        if (m != g_searchMode) {
+            g_searchMode = m;
+            g_hits.clear();          // 别让上一种模式的结果留在列表里
+            if (g_searchBuf[0]) {
+                RunSearchNow(g_searchBuf);
+                g_mode = 2;
+            }
+        }
+    }
+    ImGui::SameLine();
+
+    ImGui::SetNextItemWidth(236);
+    bool go = ImGui::InputTextWithHint("##search",
+                                       g_searchMode ? "搜索文件内容…" : "搜索文件名…",
+                                       g_searchBuf, sizeof g_searchBuf,
                                        ImGuiInputTextFlags_EnterReturnsTrue);
     if (go) {
         RunSearchNow(g_searchBuf);
@@ -2370,7 +2479,13 @@ static void DrawUI() {
     }
 
     // 自动化测试用：扫完立刻跑一次搜索
-    if (!g_scanning.load() && g_scanSeconds > 0 && !g_pendingSearch.empty()) {
+    // 内容索引在建时不要搜，否则拿到的是半成品
+    if (g_pendingContent && !g_scanning.load() && g_scanSeconds > 0 && !g_contentBusy.load()) {
+        g_pendingContent = false;
+        StartContentIndex();
+    }
+    if (!g_scanning.load() && !g_contentBusy.load() && g_scanSeconds > 0 &&
+        !g_pendingSearch.empty()) {
         std::string q = g_pendingSearch;
         g_pendingSearch.clear();
         snprintf(g_searchBuf, sizeof g_searchBuf, "%s", q.c_str());
@@ -2458,7 +2573,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
         std::string u = WideToUtf8(r);
         snprintf(g_pathBuf, sizeof g_pathBuf, "%s", u.c_str());
     }
-    if (const char* q = std::getenv("SPACESIFT_SEARCH")) g_pendingSearch = q;
+    // 必须用 _wgetenv：getenv 拿到的是系统代码页(GBK)字节，中文查询词会变成 "?????"
+    if (const wchar_t* q = _wgetenv(L"SPACESIFT_SEARCH")) g_pendingSearch = WideToUtf8(q);
+    // 脚本化钩子：SPACESIFT_MODE=content 直接进内容检索模式；
+    // SPACESIFT_CONTENT=1 扫完后自动建内容索引（和上面的 SPACESIFT_SEARCH 配套用）
+    if (const char* m = std::getenv("SPACESIFT_MODE")) {
+        if (std::string(m) == "content") g_searchMode = 1;
+    }
+    if (std::getenv("SPACESIFT_CONTENT")) g_pendingContent = true;
     if (std::getenv("SPACESIFT_AUTOSCAN")) StartScan(g_pathBuf);
 
     bool done = false;
