@@ -40,6 +40,7 @@
 #include "content.h"
 #include "extract.h"
 #include "rules.h"
+#include "ime_win32.h"
 
 // ============================================================ 扫描结果
 
@@ -140,6 +141,7 @@ static bool g_extPopOnce = false;   // 测试钩子：启动就打开后缀弹�
 
 static int  g_current = -1;
 static char g_pathBuf[512] = "C:\\";
+static bool g_focusSearch = false;
 static char g_searchBuf[256] = "";
 static int  g_mode = 0;
 static std::set<std::string> g_selected;        // 推荐清理：按规则 id
@@ -2432,6 +2434,7 @@ static void DrawUI() {
     }
 
     if (ImGui::IsKeyPressed(ImGuiKey_F5) && !g_scanning.load()) StartScan(g_pathBuf);
+    if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_F)) g_focusSearch = true;
     if (ImGui::IsKeyPressed(ImGuiKey_Escape) && g_scanning.load()) g_stopReq = true;
 
     EnsureCurrentFiles();
@@ -2501,11 +2504,18 @@ static void DrawUI() {
         // 宽度自适应：给右边的主题切换留位置，窄窗口也不会把搜索框挤到下一行
         static const char* themeLabelsW[] = {"亮色", "暗色"};
         const float toggleW = SegmentedWidth(themeLabelsW, 2);
-        const float avail = ImGui::GetWindowContentRegionMax().x - ImGui::GetCursorPosX() - toggleW - 16.0f;
+        const float btnW = 56.0f, gapW = 6.0f;
+        const float avail = ImGui::GetWindowContentRegionMax().x - ImGui::GetCursorPosX()
+                          - toggleW - btnW - gapW - 16.0f;
         float w = 320.0f;
         if (avail < w) w = avail;
         if (w < 120.0f) w = 120.0f;
         ImGui::SetNextItemWidth(w);
+    }
+    // Ctrl+F / 启动参数：把焦点给搜索框
+    if (g_focusSearch) {
+        ImGui::SetKeyboardFocusHere();
+        g_focusSearch = false;
     }
     // 高度和左边的按钮/分段控件对齐（30px）
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10, 5));
@@ -2514,7 +2524,12 @@ static void DrawUI() {
                                              g_searchBuf, sizeof g_searchBuf,
                                              ImGuiInputTextFlags_EnterReturnsTrue);
     ImGui::PopStyleVar();
-    if (go) {
+
+    // 搜索按钮：不用非得按回车
+    bool doSearch = go;
+    ImGui::SameLine(0.0f, 6.0f);
+    if (GhostButton("搜索", ImVec2(56, 0))) doSearch = true;
+    if (doSearch) {
         RunSearchNow(g_searchBuf);
         g_mode = g_searchBuf[0] ? 2 : 0;
     }
@@ -2744,6 +2759,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
 
     ImGui_ImplWin32_Init(hwnd);
     ImGui_ImplDX11_Init(g_pd3dDevice, g_pd3dContext);
+    SpaceSift_InstallImeSupport();   // 补上后端缺失的 IME 定位（否则中文候选框跑到屏幕角落）
 
     // 必须用 _wgetenv：getenv 返回的是系统代码页(GBK)字节，
     // 而程序内部全程 UTF-8，中文路径会被打成 "????"。
@@ -2760,6 +2776,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
     }
     // 必须用 _wgetenv：getenv 拿到的是系统代码页(GBK)字节，中文查询词会变成 "?????"
     if (const wchar_t* q = _wgetenv(L"SPACESIFT_SEARCH")) g_pendingSearch = WideToUtf8(q);
+    if (const wchar_t* f = _wgetenv(L"SPACESIFT_FOCUS_SEARCH")) g_focusSearch = (f[0] && f[0] != L'0');
     // 脚本化钩子：SPACESIFT_MODE=content 直接进内容检索模式；
     // SPACESIFT_CONTENT=1 扫完后自动建内容索引（和上面的 SPACESIFT_SEARCH 配套用）
     if (const char* m = std::getenv("SPACESIFT_MODE")) {
@@ -2785,6 +2802,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
         DrawUI();
+        SpaceSift_ImeFrame();
         ImGui::Render();
 
         const float clear[4] = {0x0f / 255.0f, 0x11 / 255.0f, 0x15 / 255.0f, 1.0f};
