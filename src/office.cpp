@@ -415,12 +415,41 @@ std::string PptTextRaw(const std::vector<uint8_t>& raw) {
 }  // namespace
 
 bool Handles(const std::string& ext) {
-    // .ppt 暂不接管：试过按流读、按原子搜、整文件扫，都只拿到母版占位文字，
-    // 幻灯片正文拿不到。退回 extract.cpp 里的 UTF-16 扫描（至少能拿到中文）。
-    return ext == ".doc" || ext == ".xls";
+    return ext == ".doc" || ext == ".xls" || ext == ".ppt";
+}
+
+// 直接读整个文件（.ppt 不依赖 CFB 解析，大文件的扇区链容易读错）
+bool ReadWholeFile(const std::string& path, std::vector<uint8_t>& out) {
+    const std::wstring w = extract::ToWide(path);
+    HANDLE h = CreateFileW(w.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    LARGE_INTEGER sz;
+    if (!GetFileSizeEx(h, &sz) || sz.QuadPart <= 0 || sz.QuadPart > (400ll << 20)) {
+        CloseHandle(h);
+        return false;
+    }
+    out.resize((size_t)sz.QuadPart);
+    size_t off = 0;
+    while (off < out.size()) {
+        DWORD got = 0;
+        const DWORD want = (DWORD)std::min<size_t>(out.size() - off, 1u << 20);
+        if (!ReadFile(h, out.data() + off, want, &got, nullptr) || got == 0) break;
+        off += got;
+    }
+    CloseHandle(h);
+    out.resize(off);
+    return !out.empty();
 }
 
 std::string Text(const std::string& path, const std::string& ext) {
+    // .ppt 走整文件扫描，不依赖 CFB（实测 5 MB 的 .ppt 扇区链读不对）
+    if (ext == ".ppt") {
+        std::vector<uint8_t> raw;
+        if (!ReadWholeFile(path, raw)) return {};
+        return PptTextRaw(raw);
+    }
+
     Cfb cfb;
     if (!cfb.Open(path)) return {};
     if (std::getenv("SPACESIFT_DEBUG_CFB")) {
@@ -431,7 +460,6 @@ std::string Text(const std::string& path, const std::string& ext) {
     }
     if (ext == ".doc") return DocText(cfb);
     if (ext == ".xls") return XlsText(cfb);
-    if (ext == ".ppt") return PptTextRaw(cfb.Raw());
     return {};
 }
 
