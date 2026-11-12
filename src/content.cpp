@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <cctype>
 #include <functional>
+#include <cstdio>
+#include <cstdlib>
 #include <mutex>
 #include <regex>
 #include <vector>
@@ -797,9 +799,21 @@ void RegexpFunc(sqlite3_context* ctx, int argc, sqlite3_value** argv) {
 }
 
 // 正则模式：re:xxx 或 /xxx/
+// 注意：re: 后面若还跟了 ext:/size:/name:/after:，要把它们从正则里切出去，
+// 否则 " ext:pdf" 会被当成正则的一部分，永远匹配不到。
 bool IsRegexQuery(const std::string& q, std::string& pattern) {
     if (q.size() > 3 && (q.compare(0, 3, "re:") == 0 || q.compare(0, 3, "RE:") == 0)) {
         pattern = q.substr(3);
+        static const char* kKeys[] = {" ext:", " size:", " name:", " after:"};
+        for (;;) {
+            size_t cut = std::string::npos;
+            for (const char* k : kKeys) {
+                const size_t pos = pattern.find(k);
+                if (pos != std::string::npos && (cut == std::string::npos || pos < cut)) cut = pos;
+            }
+            if (cut == std::string::npos) break;
+            pattern.resize(cut);
+        }
         return !pattern.empty();
     }
     if (q.size() > 2 && q.front() == '/' && q.back() == '/') {
@@ -812,6 +826,8 @@ bool IsRegexQuery(const std::string& q, std::string& pattern) {
 std::vector<db::Hit> Search(const std::string& root, const std::string& query, int limit) {
     std::vector<db::Hit> out;
     if (query.empty() || !HasIndex(root)) return out;
+
+    const ParsedQuery pq = ParseQuery(query);
 
     // ---- 正则模式：全表扫描（显式写 re: 才走这条路，慢是用户预期内的）
     std::string rePat;
@@ -829,12 +845,48 @@ std::vector<db::Hit> Search(const std::string& root, const std::string& query, i
         try { re = std::regex(rePat, std::regex::ECMAScript | std::regex::optimize); }
         catch (...) { sqlite3_close(db); return out; }
 
+        // 正则也要支持 ext:/size:/after: 过滤
+        std::string reFilter;
+        std::vector<int> reIdx;
+        int rp = 10;
+        if (!pq.exts.empty()) {
+            reFilter += " AND ext IN (";
+            for (size_t i = 0; i < pq.exts.size(); ++i) {
+                if (i) reFilter += ",";
+                reFilter += "?" + std::to_string(rp);
+                reIdx.push_back(rp++);
+            }
+            reFilter += ")";
+        }
+        if (!pq.nameLike.empty()) {
+            reFilter += " AND name LIKE ?" + std::to_string(rp) + " ESCAPE '\'";
+            reIdx.push_back(rp++);
+        }
+        if (pq.hasSize) {
+            reFilter += std::string(" AND size ") + pq.sizeOp + " ?" + std::to_string(rp);
+            reIdx.push_back(rp++);
+        }
+        if (pq.hasAfter) {
+            reFilter += " AND mtime >= ?" + std::to_string(rp);
+            reIdx.push_back(rp++);
+        }
+
         sqlite3_stmt* st = nullptr;
-        if (sqlite3_prepare_v2(db,
-                "SELECT path,name,size,substr(text,1,600) FROM docs WHERE text REGEXP ?1 "
-                "ORDER BY mtime DESC LIMIT ?2", -1, &st, nullptr) == SQLITE_OK) {
+        const std::string reSql =
+            "SELECT path,name,size,substr(text,1,600) FROM docs WHERE text REGEXP ?1" +
+            reFilter + " ORDER BY mtime DESC LIMIT ?2";
+        if (sqlite3_prepare_v2(db, reSql.c_str(), -1, &st, nullptr) == SQLITE_OK) {
             sqlite3_bind_text(st, 1, rePat.c_str(), -1, SQLITE_TRANSIENT);
             sqlite3_bind_int(st, 2, limit);
+            size_t fi2 = 0;
+            for (const auto& e : pq.exts)
+                sqlite3_bind_text(st, reIdx[fi2++], e.c_str(), -1, SQLITE_TRANSIENT);
+            if (!pq.nameLike.empty()) {
+                const std::string pat = "%" + LikeEscape(pq.nameLike) + "%";
+                sqlite3_bind_text(st, reIdx[fi2++], pat.c_str(), -1, SQLITE_TRANSIENT);
+            }
+            if (pq.hasSize) sqlite3_bind_int64(st, reIdx[fi2++], (sqlite3_int64)pq.sizeVal);
+            if (pq.hasAfter) sqlite3_bind_int64(st, reIdx[fi2++], (sqlite3_int64)pq.after);
             while (sqlite3_step(st) == SQLITE_ROW) {
                 db::Hit h;
                 const unsigned char* p0 = sqlite3_column_text(st, 0);
@@ -859,7 +911,6 @@ std::vector<db::Hit> Search(const std::string& root, const std::string& query, i
         return out;
     }
 
-    const ParsedQuery pq = ParseQuery(query);
     if (pq.Empty()) return out;
 
     const std::string dbPath = DbPathFor(root);
@@ -870,17 +921,35 @@ std::vector<db::Hit> Search(const std::string& root, const std::string& query, i
     }
     sqlite3_exec(db, "PRAGMA cache_size=-16384;", nullptr, nullptr, nullptr);
 
+    // 过滤条件用显式编号（从 10 起）：匿名 ? 会跟后面的 ?3（LIMIT）撞号，
+    // 结果 LIMIT 被绑成 ".pdf"，关键词 + 后缀永远 0 行。
+    std::vector<int> filterIdx;
     std::string filterSql;
+    int nextParam = 10;
     if (!pq.exts.empty()) {
         filterSql += " AND d.ext IN (";
-        for (size_t i = 0; i < pq.exts.size(); ++i) filterSql += (i ? ",?" : "?");
+        for (size_t i = 0; i < pq.exts.size(); ++i) {
+            if (i) filterSql += ",";
+            filterSql += "?" + std::to_string(nextParam);
+            filterIdx.push_back(nextParam++);
+        }
         filterSql += ")";
     }
-    if (!pq.nameLike.empty()) filterSql += " AND d.name LIKE ? ESCAPE '\\'";
-    if (pq.hasSize) filterSql += std::string(" AND d.size ") + pq.sizeOp + " ?";
-    if (pq.hasAfter) filterSql += " AND d.mtime >= ?";
+    if (!pq.nameLike.empty()) {
+        filterSql += " AND d.name LIKE ?" + std::to_string(nextParam) + " ESCAPE '\\'";
+        filterIdx.push_back(nextParam++);
+    }
+    if (pq.hasSize) {
+        filterSql += std::string(" AND d.size ") + pq.sizeOp + " ?" + std::to_string(nextParam);
+        filterIdx.push_back(nextParam++);
+    }
+    if (pq.hasAfter) {
+        filterSql += " AND d.mtime >= ?" + std::to_string(nextParam);
+        filterIdx.push_back(nextParam++);
+    }
 
     const std::string match = BuildMatch(pq);
+    if (std::getenv("SPACESIFT_DEBUG_Q")) fprintf(stderr, "[q] match=[%s]\n", match.c_str());
     sqlite3_stmt* st = nullptr;
 
     if (!match.empty()) {
@@ -903,17 +972,19 @@ std::vector<db::Hit> Search(const std::string& root, const std::string& query, i
             int idx = 1;
             const std::string rawTerm = !pq.terms.empty() ? pq.terms[0]
                                       : (!pq.orTerms.empty() ? pq.orTerms[0] : query);
-            sqlite3_bind_text(st, idx++, rawTerm.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_text(st, idx++, match.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(st, 1, rawTerm.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(st, 2, match.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int(st, 3, limit);
+            size_t fi = 0;
             for (const auto& e : pq.exts)
-                sqlite3_bind_text(st, idx++, e.c_str(), -1, SQLITE_TRANSIENT);
+                sqlite3_bind_text(st, filterIdx[fi++], e.c_str(), -1, SQLITE_TRANSIENT);
             if (!pq.nameLike.empty()) {
                 const std::string pat = "%" + LikeEscape(pq.nameLike) + "%";
-                sqlite3_bind_text(st, idx++, pat.c_str(), -1, SQLITE_TRANSIENT);
+                sqlite3_bind_text(st, filterIdx[fi++], pat.c_str(), -1, SQLITE_TRANSIENT);
             }
-            if (pq.hasSize) sqlite3_bind_int64(st, idx++, (sqlite3_int64)pq.sizeVal);
-            if (pq.hasAfter) sqlite3_bind_int64(st, idx++, (sqlite3_int64)pq.after);
-            sqlite3_bind_int(st, idx++, limit);
+            if (pq.hasSize) sqlite3_bind_int64(st, filterIdx[fi++], (sqlite3_int64)pq.sizeVal);
+            if (pq.hasAfter) sqlite3_bind_int64(st, filterIdx[fi++], (sqlite3_int64)pq.after);
+            (void)idx;
 
             while (sqlite3_step(st) == SQLITE_ROW) {
                 db::Hit h;
@@ -937,19 +1008,19 @@ std::vector<db::Hit> Search(const std::string& root, const std::string& query, i
         std::string sql =
             "SELECT d.path, d.name, d.size, '' FROM docs d WHERE 1=1";
         sql += filterSql;
-        sql += " ORDER BY d.size DESC LIMIT ?";
+        sql += " ORDER BY d.size DESC LIMIT ?9";
 
         if (sqlite3_prepare_v2(db, sql.c_str(), -1, &st, nullptr) == SQLITE_OK) {
-            int idx = 1;
+            sqlite3_bind_int(st, 9, limit);
+            size_t fi = 0;
             for (const auto& e : pq.exts)
-                sqlite3_bind_text(st, idx++, e.c_str(), -1, SQLITE_TRANSIENT);
+                sqlite3_bind_text(st, filterIdx[fi++], e.c_str(), -1, SQLITE_TRANSIENT);
             if (!pq.nameLike.empty()) {
                 const std::string pat = "%" + LikeEscape(pq.nameLike) + "%";
-                sqlite3_bind_text(st, idx++, pat.c_str(), -1, SQLITE_TRANSIENT);
+                sqlite3_bind_text(st, filterIdx[fi++], pat.c_str(), -1, SQLITE_TRANSIENT);
             }
-            if (pq.hasSize) sqlite3_bind_int64(st, idx++, (sqlite3_int64)pq.sizeVal);
-            if (pq.hasAfter) sqlite3_bind_int64(st, idx++, (sqlite3_int64)pq.after);
-            sqlite3_bind_int(st, idx++, limit);
+            if (pq.hasSize) sqlite3_bind_int64(st, filterIdx[fi++], (sqlite3_int64)pq.sizeVal);
+            if (pq.hasAfter) sqlite3_bind_int64(st, filterIdx[fi++], (sqlite3_int64)pq.after);
 
             while (sqlite3_step(st) == SQLITE_ROW) {
                 db::Hit h;

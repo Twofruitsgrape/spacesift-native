@@ -277,6 +277,32 @@ int main() {
         auto hits = content::Search(dirU8, "关键词丙 ext:pdf", 50);
         Check(hits.empty(), "关键词 + ext:pdf 过滤后为空");
     }
+    // ↓ 肯定用例：之前只写了否定用例，导致「关键词 + 后缀」永远返回 0 的 bug 没被发现
+    {
+        auto hits = content::Search(dirU8, "关键词丙 ext:dxf", 50);
+        bool ok = !hits.empty();
+        for (auto& h : hits) if (!Contains(h.path, ".dxf")) ok = false;
+        Check(ok, "关键词 + ext:dxf 能命中 d.dxf（肯定用例）");
+    }
+    {
+        auto hits = content::Search(dirU8, "关键词丙 ext:docx", 50);
+        Check(hits.empty(), "关键词 + ext:docx 不应命中 dxf");
+    }
+    {
+        auto hits = content::Search(dirU8, "re:关键词[甲乙] ext:txt", 50);
+        bool hasA = false, hasB = false;
+        for (auto& h : hits) {
+            if (Contains(h.path, "utf8.txt")) hasA = true;
+            if (Contains(h.path, "gbk.txt")) hasB = true;
+        }
+        Check(hasA && hasB, "正则 + ext:txt 过滤生效");
+    }
+    {
+        auto hits = content::Search(dirU8, "关键词丙 ext:dxf size:>10", 50);
+        bool ok = !hits.empty();
+        for (auto& h : hits) if (h.size <= 10) ok = false;
+        Check(ok, "关键词 + ext + size 三个条件同时生效");
+    }
     {
         auto hits = content::Search(dirU8, "关键词丙 单行文字", 50);
         Check(!hits.empty() && Contains(hits[0].path, "d.dxf"), "空格分隔 = AND");
