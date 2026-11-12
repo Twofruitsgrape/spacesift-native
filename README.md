@@ -28,7 +28,7 @@
 点「更多信息 → 仍要运行」即可。校验文件完整性：
 
 ```powershell
-Get-FileHash .\SpaceSift-2.0.2-portable.zip -Algorithm SHA256
+Get-FileHash .\SpaceSift-2.0.3-portable.zip -Algorithm SHA256
 # 对比发行页 SHA256SUMS.txt 里的值
 ```
 

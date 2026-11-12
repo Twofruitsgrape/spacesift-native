@@ -442,20 +442,36 @@ static void RvLog(const char* fmt, ...) {
 }
 
 static void RevealInExplorer(const std::string& path) {
-    if (path.empty()) {
-        g_lastCleanMsg = "路径为空";
-        return;
-    }
+    if (path.empty()) { g_lastCleanMsg = "路径为空"; return; }
     std::wstring w = Utf8ToWide(path);
 
     DWORD attr = GetFileAttributesW(w.c_str());
     RvLog("[reveal] path=%s", path.c_str());
     RvLog("[reveal] attr=0x%lx err=%lu", (unsigned long)attr, GetLastError());
 
-    // 允许接下来被调用的进程（explorer.exe）把窗口提到前台。
-    // 不调这个的话：本程序是前台进程时，资源管理器只能在后面打开，
-    // 用户看到的就是「点了没反应」。
     AllowSetForegroundWindow(ASFW_ANY);
+
+    // 打开一个文件夹。只用实测安全的两种方式：
+    //   1) SHOpenFolderAndSelectItems(folder_pidl) —— 走 shell，同步返回，约 0.9s
+    //   2) ShellExecuteW(nullptr, L"open", dir)  —— 47ms
+    // 明确禁用两种（都实测踩过坑）：
+    //   x ShellExecute("explorer.exe", "/select,...")  → 新起 explorer.exe 进程，
+    //     部分机器直接 0xc0000142 弹「应用程序错误」
+    //   x ShellExecuteEx(SEE_MASK_INVOKEIDLIST)        → 在 UI 线程上死锁，界面卡住
+    auto openFolder = [](const std::wstring& dir) -> bool {
+        PIDLIST_ABSOLUTE pidl = ILCreateFromPathW(dir.c_str());
+        if (pidl) {
+            HRESULT hr = SHOpenFolderAndSelectItems(pidl, 0, nullptr, 0);
+            ILFree(pidl);
+            RvLog("[reveal] openFolder(SHOpenFolder) hr=0x%08lx", (unsigned long)hr);
+            if (SUCCEEDED(hr)) return true;
+        } else {
+            RvLog("[reveal] openFolder ILCreateFromPath failed");
+        }
+        INT_PTR r = (INT_PTR)ShellExecuteW(nullptr, L"open", dir.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        RvLog("[reveal] openFolder(ShellExecute) ret=%ld", (long)r);
+        return r > 32;
+    };
 
     // ---- 1) 文件存在：在资源管理器里选中它 ----
     if (attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY)) {
@@ -464,43 +480,32 @@ static void RevealInExplorer(const std::string& path) {
             HRESULT hr = SHOpenFolderAndSelectItems(pidl, 0, nullptr, 0);
             ILFree(pidl);
             RvLog("[reveal] SHOpenFolderAndSelectItems hr=0x%08lx", (unsigned long)hr);
-            if (SUCCEEDED(hr)) {
-                g_lastCleanMsg = "已在资源管理器中定位";
-                return;
-            }
-        }
-        // 1b) 退回 explorer /select（用 ShellExecuteW 传参数，不拼命令行）
-        std::wstring args = L"/select,\"" + w + L"\"";
-        INT_PTR r = (INT_PTR)ShellExecuteW(nullptr, L"open", L"explorer.exe",
-                                           args.c_str(), nullptr, SW_SHOWNORMAL);
-        RvLog("[reveal] fallback explorer /select ret=%ld", (long)r);
-        if (r > 32) {
-            g_lastCleanMsg = "已在资源管理器中定位";
-            return;
+            if (SUCCEEDED(hr)) { g_lastCleanMsg = "已在资源管理器中定位"; return; }
+        } else {
+            RvLog("[reveal] file ILCreateFromPath failed err=%lu", GetLastError());
         }
     }
 
-    // ---- 2) 文件不在了 / 上面都失败：打开所在目录 ----
+    // ---- 2) 本身就是目录 ----
+    if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY)) {
+        g_lastCleanMsg = openFolder(w) ? "已打开目录" : "打开目录失败";
+        return;
+    }
+
+    // ---- 3) 文件不在了 / 定位失败：打开所在目录 ----
     size_t slash = w.find_last_of(L'\\');
     if (slash != std::wstring::npos && slash > 2) {
         std::wstring parent = w.substr(0, slash);
         if (GetFileAttributesW(parent.c_str()) != INVALID_FILE_ATTRIBUTES) {
-            INT_PTR r = (INT_PTR)ShellExecuteW(nullptr, L"open", parent.c_str(),
-                                               nullptr, nullptr, SW_SHOWNORMAL);
-            RvLog("[reveal] open parent ret=%ld", (long)r);
-            g_lastCleanMsg = (attr == INVALID_FILE_ATTRIBUTES)
-                                 ? "文件已不存在，已打开所在目录"
-                                 : "已打开所在目录";
+            if (openFolder(parent)) {
+                g_lastCleanMsg = (attr == INVALID_FILE_ATTRIBUTES)
+                                     ? "文件已不存在，已打开所在目录"
+                                     : "已打开所在目录（未能选中文件）";
+            } else {
+                g_lastCleanMsg = "打开资源管理器失败";
+            }
             return;
         }
-    }
-
-    // ---- 3) 目录本身就直接打开 ----
-    if (attr & FILE_ATTRIBUTE_DIRECTORY) {
-        INT_PTR r = (INT_PTR)ShellExecuteW(nullptr, L"open", w.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-        RvLog("[reveal] open dir ret=%ld", (long)r);
-        g_lastCleanMsg = (r > 32) ? "已打开目录" : "打开目录失败";
-        return;
     }
 
     g_lastCleanMsg = "找不到该文件，所在目录也不存在";
