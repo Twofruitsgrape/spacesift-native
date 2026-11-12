@@ -74,6 +74,17 @@ class App:
         user32.PostMessageW(self.hwnd, WM_MOUSEMOVE, 0, _lparam(x, y))
         time.sleep(0.06)
 
+    def move_to_corner(self, w=1300, h=860):
+        """应用会恢复上次窗口位置（可能跑到屏幕外），挪回左上角，否则合成点击会被裁掉。"""
+        for _ in range(8):
+            user32.SetWindowPos(self.hwnd, 0, 0, 0, w, h, 0x0004)  # SWP_NOZORDER
+            time.sleep(0.6)
+            r = wintypes.RECT()
+            user32.GetWindowRect(self.hwnd, ctypes.byref(r))
+            if abs(r.left) < 20 and abs(r.top) < 20:
+                return r.left, r.top
+        return None
+
     def client_origin(self):
         pt = wintypes.POINT(0, 0)
         user32.ClientToScreen(self.hwnd, ctypes.byref(pt))
@@ -92,6 +103,20 @@ class App:
         user32.PostMessageW(self.hwnd, WM_LBUTTONDOWN, MK_LBUTTON, lp)
         time.sleep(0.08)
         user32.PostMessageW(self.hwnd, WM_LBUTTONUP, 0, lp)
+        time.sleep(settle)
+
+    def right_click(self, x, y, settle=0.6):
+        WM_RBUTTONDOWN, WM_RBUTTONUP = 0x0204, 0x0205
+        MK_RBUTTON = 0x0002
+        cx, cy = self.client_origin()
+        user32.SetCursorPos(cx + x, cy + y)
+        time.sleep(0.15)
+        lp = _lparam(x, y)
+        user32.PostMessageW(self.hwnd, WM_MOUSEMOVE, 0, lp)
+        time.sleep(0.08)
+        user32.PostMessageW(self.hwnd, WM_RBUTTONDOWN, MK_RBUTTON, lp)
+        time.sleep(0.08)
+        user32.PostMessageW(self.hwnd, WM_RBUTTONUP, 0, lp)
         time.sleep(settle)
 
     def text(self, s):

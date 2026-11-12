@@ -420,47 +420,90 @@ static void SetTheme(bool dark) {
 //   2. 命令行参数解析依赖引号，路径带空格/中文时容易断
 // 改用 Shell 官方接口 SHOpenFolderAndSelectItems —— 它接受 PIDL，
 // 不经过命令行，路径怎么写都不会错。
+// 调试日志（SPACESIFT_DEBUG_LOG=路径 时才写）
+static void RvLog(const char* fmt, ...) {
+    static FILE* f = nullptr;
+    static bool inited = false;
+    if (!inited) {
+        inited = true;
+        const wchar_t* p = _wgetenv(L"SPACESIFT_DEBUG_LOG");
+        if (p && *p) {
+            std::wstring wp(p);
+            f = _wfopen(wp.c_str(), L"a");
+        }
+    }
+    if (!f) return;
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(f, fmt, ap);
+    va_end(ap);
+    fputc('\n', f);
+    fflush(f);
+}
+
 static void RevealInExplorer(const std::string& path) {
-    if (path.empty()) return;
+    if (path.empty()) {
+        g_lastCleanMsg = "路径为空";
+        return;
+    }
     std::wstring w = Utf8ToWide(path);
 
     DWORD attr = GetFileAttributesW(w.c_str());
-    if (attr == INVALID_FILE_ATTRIBUTES) {
-        // 索引可能是旧的，文件已经被删/挪走了：退一步打开它的父目录
-        size_t slash = w.find_last_of(L'\\');
-        if (slash != std::wstring::npos && slash > 2) {
-            std::wstring parent = w.substr(0, slash);
-            if (GetFileAttributesW(parent.c_str()) != INVALID_FILE_ATTRIBUTES) {
-                ShellExecuteW(nullptr, L"open", parent.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-                g_lastCleanMsg = "文件已不存在，已打开所在目录";
+    RvLog("[reveal] path=%s", path.c_str());
+    RvLog("[reveal] attr=0x%lx err=%lu", (unsigned long)attr, GetLastError());
+
+    // 允许接下来被调用的进程（explorer.exe）把窗口提到前台。
+    // 不调这个的话：本程序是前台进程时，资源管理器只能在后面打开，
+    // 用户看到的就是「点了没反应」。
+    AllowSetForegroundWindow(ASFW_ANY);
+
+    // ---- 1) 文件存在：在资源管理器里选中它 ----
+    if (attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY)) {
+        PIDLIST_ABSOLUTE pidl = ILCreateFromPathW(w.c_str());
+        if (pidl) {
+            HRESULT hr = SHOpenFolderAndSelectItems(pidl, 0, nullptr, 0);
+            ILFree(pidl);
+            RvLog("[reveal] SHOpenFolderAndSelectItems hr=0x%08lx", (unsigned long)hr);
+            if (SUCCEEDED(hr)) {
+                g_lastCleanMsg = "已在资源管理器中定位";
                 return;
             }
         }
-        g_lastCleanMsg = "文件已不存在，目录也找不到了";
-        return;
+        // 1b) 退回 explorer /select（用 ShellExecuteW 传参数，不拼命令行）
+        std::wstring args = L"/select,\"" + w + L"\"";
+        INT_PTR r = (INT_PTR)ShellExecuteW(nullptr, L"open", L"explorer.exe",
+                                           args.c_str(), nullptr, SW_SHOWNORMAL);
+        RvLog("[reveal] fallback explorer /select ret=%ld", (long)r);
+        if (r > 32) {
+            g_lastCleanMsg = "已在资源管理器中定位";
+            return;
+        }
     }
 
-    // 目录：直接打开
+    // ---- 2) 文件不在了 / 上面都失败：打开所在目录 ----
+    size_t slash = w.find_last_of(L'\\');
+    if (slash != std::wstring::npos && slash > 2) {
+        std::wstring parent = w.substr(0, slash);
+        if (GetFileAttributesW(parent.c_str()) != INVALID_FILE_ATTRIBUTES) {
+            INT_PTR r = (INT_PTR)ShellExecuteW(nullptr, L"open", parent.c_str(),
+                                               nullptr, nullptr, SW_SHOWNORMAL);
+            RvLog("[reveal] open parent ret=%ld", (long)r);
+            g_lastCleanMsg = (attr == INVALID_FILE_ATTRIBUTES)
+                                 ? "文件已不存在，已打开所在目录"
+                                 : "已打开所在目录";
+            return;
+        }
+    }
+
+    // ---- 3) 目录本身就直接打开 ----
     if (attr & FILE_ATTRIBUTE_DIRECTORY) {
-        ShellExecuteW(nullptr, L"open", w.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        INT_PTR r = (INT_PTR)ShellExecuteW(nullptr, L"open", w.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        RvLog("[reveal] open dir ret=%ld", (long)r);
+        g_lastCleanMsg = (r > 32) ? "已打开目录" : "打开目录失败";
         return;
     }
 
-    // 文件：在资源管理器里选中它
-    PIDLIST_ABSOLUTE pidl = ILCreateFromPathW(w.c_str());
-    if (!pidl) {
-        g_lastCleanMsg = "无法定位该文件";
-        return;
-    }
-    HRESULT hr = SHOpenFolderAndSelectItems(pidl, 0, nullptr, 0);
-    ILFree(pidl);
-    if (FAILED(hr)) {
-        // 极少数情况下 PIDL 失效，退回打开父目录
-        size_t slash = w.find_last_of(L'\\');
-        if (slash != std::wstring::npos && slash > 2)
-            ShellExecuteW(nullptr, L"open", w.substr(0, slash).c_str(),
-                          nullptr, nullptr, SW_SHOWNORMAL);
-    }
+    g_lastCleanMsg = "找不到该文件，所在目录也不存在";
 }
 
 // 写进 Windows 剪贴板（CF_UNICODETEXT）。
@@ -2344,8 +2387,17 @@ static void DrawStatusStrip() {
                 std::to_string(g_cleanTotal.load()) + " …";
         rightColor = g_ui.warning;
     } else if (!g_lastCleanMsg.empty()) {
-        right = g_lastCleanMsg;
-        rightColor = g_ui.success;
+        // 提示只显示 6 秒，否则上一条「路径已复制」会永远挂在那儿
+        static std::string shownMsg;
+        static double shownAt = 0.0;
+        if (shownMsg != g_lastCleanMsg) {
+            shownMsg = g_lastCleanMsg;
+            shownAt = ImGui::GetTime();
+        }
+        if (ImGui::GetTime() - shownAt < 6.0) {
+            right = g_lastCleanMsg;
+            rightColor = g_ui.success;
+        }
     } else if (scanning) {
         std::string cur;
         {
