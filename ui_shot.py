@@ -15,8 +15,9 @@ TAG = sys.argv[1] if len(sys.argv) > 1 else "shot"
 TAB_RECO, TAB_DEEP, TAB_SEARCH = 913, 976, 1039
 TAB_Y = 222
 SEARCH_X, SEARCH_Y = 950, 53
-GO_X = 1135
+GO_X = 1160
 THEME_X, THEME_Y = 1200, 53
+THEME_DARK_X = 1275
 
 
 def kill():
@@ -94,7 +95,7 @@ click(THEME_X, THEME_Y)
 time.sleep(1.2)
 shot(f"{TAG}_light.png")
 
-click(THEME_X, THEME_Y)
+click(THEME_DARK_X, THEME_Y)
 time.sleep(0.8)
 click(TAB_RECO, TAB_Y)
 shot(f"{TAG}_reco.png")
