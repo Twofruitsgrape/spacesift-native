@@ -441,6 +441,23 @@ static void RvLog(const char* fmt, ...) {
     fflush(f);
 }
 
+// 直接起 explorer.exe（用完整路径），参数原样传。不走 shell 关联、不走 DDE。
+static bool SpawnExplorer(const std::wstring& args) {
+    wchar_t windir[MAX_PATH] = {0};
+    if (!GetWindowsDirectoryW(windir, MAX_PATH)) return false;
+    std::wstring exe = std::wstring(windir) + L"\\explorer.exe";
+    std::wstring cmd = L"\"" + exe + L"\" " + args;
+    STARTUPINFOW si = {};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi = {};
+    BOOL ok = CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE,
+                             0, nullptr, nullptr, &si, &pi);
+    DWORD err = ok ? 0 : GetLastError();
+    if (ok) { CloseHandle(pi.hProcess); CloseHandle(pi.hThread); }
+    RvLog("[reveal] SpawnExplorer ok=%d err=%lu args=%ls", (int)ok, (unsigned long)err, args.c_str());
+    return ok != 0;
+}
+
 static void RevealInExplorer(const std::string& path) {
     if (path.empty()) { g_lastCleanMsg = "路径为空"; return; }
     std::wstring w = Utf8ToWide(path);
@@ -490,15 +507,8 @@ static void RevealInExplorer(const std::string& path) {
 
         // 第三级：直接把 explorer.exe 拉起来。用 CreateProcessW 而不是 ShellExecute，
         // 避免继承任何 shell 关联/兼容层设置。
-        std::wstring exe = L"explorer.exe";
-        std::wstring cmd = exe + L" \"" + dir + L"\"";
-        STARTUPINFOW si = {};
-        si.cb = sizeof(si);
-        PROCESS_INFORMATION pi = {};
-        BOOL ok = CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE,
-                                 0, nullptr, nullptr, &si, &pi);
+        BOOL ok = SpawnExplorer(L"\"" + dir + L"\"");
         DWORD err = ok ? 0 : GetLastError();
-        if (ok) { CloseHandle(pi.hProcess); CloseHandle(pi.hThread); }
         snprintf(buf, sizeof buf, " CP=%d/%lu", (int)ok, (unsigned long)err);
         d += buf;
         RvLog("[reveal] openFolder #3 %s", buf);
@@ -517,6 +527,13 @@ static void RevealInExplorer(const std::string& path) {
             if (SUCCEEDED(hr)) { g_lastCleanMsg = "已在资源管理器中定位"; return; }
         } else {
             RvLog("[reveal] file ILCreateFromPath failed err=%lu", GetLastError());
+        }
+
+        // 1b) 直接起 explorer.exe /select —— 不需要和运行中的 explorer 握手。
+        //     shell 命名空间定位失败时（subst/网络盘、关联被改、UIPI）仍可能成功。
+        if (SpawnExplorer(L"/select,\"" + w + L"\"")) {
+            g_lastCleanMsg = "已在资源管理器中定位";
+            return;
         }
     }
 
