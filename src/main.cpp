@@ -2477,9 +2477,11 @@ static void DrawUI() {
         if (PrimaryButton("扫描", ImVec2(64, 0))) StartScan(g_pathBuf);
     }
     ImGui::SameLine();
+    static const char* searchModeLabels[] = {"文件名", "内容"};
+    const ImVec2 modeRowPos = ImGui::GetCursorScreenPos();
+    const float modeW = SegmentedWidth(searchModeLabels, 2);
 
     {
-        static const char* searchModeLabels[] = {"文件名", "内容"};
         int m = Segmented("smode", searchModeLabels, 2, g_searchMode, 30.0f);
         if (m != g_searchMode) {
             g_searchMode = m;
@@ -2490,15 +2492,28 @@ static void DrawUI() {
             }
         }
     }
-    ImGui::SameLine();
+    // Segmented 内部结尾会 SetCursorScreenPos(p.x, p.y+height) + Dummy，
+    // 把光标推到下一行；这里用宽度自己算出位置，把它拉回同一行。
+    ImGui::SetCursorScreenPos(ImVec2(modeRowPos.x + modeW + 10.0f, modeRowPos.y));
 
     // 搜索框跟在 文件名|内容 后面（左对齐），主题切换推到最右
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(320);
+    {
+        // 宽度自适应：给右边的主题切换留位置，窄窗口也不会把搜索框挤到下一行
+        static const char* themeLabelsW[] = {"亮色", "暗色"};
+        const float toggleW = SegmentedWidth(themeLabelsW, 2);
+        const float avail = ImGui::GetWindowContentRegionMax().x - ImGui::GetCursorPosX() - toggleW - 16.0f;
+        float w = 320.0f;
+        if (avail < w) w = avail;
+        if (w < 120.0f) w = 120.0f;
+        ImGui::SetNextItemWidth(w);
+    }
+    // 高度和左边的按钮/分段控件对齐（30px）
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10, 5));
     const bool go = ImGui::InputTextWithHint("##search",
                                              g_searchMode ? "搜索文件内容…" : "搜索文件名…",
                                              g_searchBuf, sizeof g_searchBuf,
                                              ImGuiInputTextFlags_EnterReturnsTrue);
+    ImGui::PopStyleVar();
     if (go) {
         RunSearchNow(g_searchBuf);
         g_mode = g_searchBuf[0] ? 2 : 0;
