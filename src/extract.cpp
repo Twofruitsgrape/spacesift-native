@@ -11,6 +11,7 @@
 
 #include "miniz.h"
 #include "external.h"
+#include "office.h"
 // SolidWorks 零件/装配体/工程图（MIT，纯 C++ 解析，不装 SW 也能读）
 #include "openswx/document.h"
 // 只用声明和类型；函数体全部靠 LoadLibrary + GetProcAddress 拿到，
@@ -1310,7 +1311,14 @@ std::string LegacyText(const std::string& path, const std::string& ext) {
     };
     std::string tmp;
 
-    // catdoc 系优先：启动快，直接吐 stdout
+    // 原生解析优先：自己读 CFB + BIFF/PPT/Word 流，不依赖任何外部工具
+    if (office::Handles(ext)) {
+        std::string native = office::Text(path, ext);
+        if (native.size() >= 32) return native;
+        out = native;                 // 太少就留着和外部工具的拼起来
+    }
+
+    // catdoc 系：装了就用（对复杂/损坏文件更稳）
     if (ext == ".doc") {
         if (tryRun(L"catdoc.exe", L"-d utf-8 \"" + src + L"\"", tmp)) return tmp;
     } else if (ext == ".ppt") {

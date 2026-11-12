@@ -60,7 +60,7 @@ g++ -O2 -std=c++20 -static -s -mwindows ^
   -I third_party/imgui -I third_party/imgui/backends ^
   -I third_party/sqlite/sqlite-amalgamation-3450000 -I third_party/miniz ^
   -I third_party/pdfium/include -I third_party/openswx/include -I src ^
-  src/main.cpp src/db.cpp src/rules.cpp src/extract.cpp src/content.cpp src/external.cpp ^
+  src/main.cpp src/db.cpp src/rules.cpp src/extract.cpp src/office.cpp src/content.cpp src/external.cpp ^
   build/sqlite3_fts5.o ^
   build/miniz.o build/miniz_tdef.o build/miniz_tinfl.o build/miniz_zip.o ^
   build/openswx/pugixml.o build/openswx/document.o build/openswx/decompressor.o ^
