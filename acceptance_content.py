@@ -11,6 +11,29 @@ DEFAULT_LOG = os.path.join(os.environ["LOCALAPPDATA"], "SpaceSift", "reveal.log"
 ROOT_DIR = r"E:\Projects\电脑文件全局检索"
 
 
+
+def close_test_windows():
+    """关掉测试过程中留下的资源管理器窗口，避免它们盖住程序导致点击落空。"""
+    import ctypes
+    from ctypes import wintypes
+    names = {"docs", "src", "tools", "cigarette", "电脑文件全局检索",
+             "SpaceSift-内容检索版", "SpaceSift-内容检索版 属性"}
+    uu = ctypes.windll.user32
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def cb(h, _):
+        cls = ctypes.create_unicode_buffer(256)
+        uu.GetClassNameW(h, cls, 256)
+        if cls.value in ("CabinetWClass", "ExploreWClass", "#32770"):
+            n = uu.GetWindowTextLengthW(h)
+            b = ctypes.create_unicode_buffer(n + 1)
+            uu.GetWindowTextW(h, b, n + 1)
+            if b.value in names:
+                uu.PostMessageW(h, 0x0010, 0, 0)
+        return True
+
+    uu.EnumWindows(cb, 0)
+
 def kill():
     subprocess.run(["powershell", "-NoProfile", "-Command",
                     "Get-Process -Name SpaceSift* -ErrorAction SilentlyContinue | Stop-Process -Force"],
@@ -42,11 +65,12 @@ def logtxt():
 
 
 def shot(name):
-    subprocess.run([sys.executable, "shot.py", "SpaceSift", name], cwd=ROOT, capture_output=True)
+    subprocess.run([sys.executable, "shot.py", "SpaceSift Native", name], cwd=ROOT, capture_output=True)
 
 
 if os.path.exists(DEFAULT_LOG):
     os.remove(DEFAULT_LOG)
+close_test_windows()
 kill(); time.sleep(1.2)
 env = dict(os.environ)
 env["SPACESIFT_ROOT"] = ROOT_DIR
@@ -75,17 +99,17 @@ def click(x, y, right=False, settle=0.8):
 
 
 # 内容模式
-click(795, 65)
+click(785, 53)
 time.sleep(1.0)
 shot("c_0_mode.png")
 # 检索结果页签（内容模式整体下移）
-click(1036, 275)
+click(1042, 292)
 time.sleep(1.0)
 shot("c_1_tab.png")
 # 搜关键词
-click(950, 65)
+click(950, 53)
 app.text("DWG")
-click(1148, 65)
+click(1160, 53)
 time.sleep(2.5)
 shot("c_2_hits.png")
 n0 = len(logtxt())

@@ -20,6 +20,29 @@ DEFAULT_LOG = os.path.join(os.environ["LOCALAPPDATA"], "SpaceSift", "reveal.log"
 ROOT_DIR = r"E:\Projects\电脑文件全局检索"
 
 
+
+def close_test_windows():
+    """关掉测试过程中留下的资源管理器窗口，避免它们盖住程序导致点击落空。"""
+    import ctypes
+    from ctypes import wintypes
+    names = {"docs", "src", "tools", "cigarette", "电脑文件全局检索",
+             "SpaceSift-内容检索版", "SpaceSift-内容检索版 属性"}
+    uu = ctypes.windll.user32
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def cb(h, _):
+        cls = ctypes.create_unicode_buffer(256)
+        uu.GetClassNameW(h, cls, 256)
+        if cls.value in ("CabinetWClass", "ExploreWClass", "#32770"):
+            n = uu.GetWindowTextLengthW(h)
+            b = ctypes.create_unicode_buffer(n + 1)
+            uu.GetWindowTextW(h, b, n + 1)
+            if b.value in names:
+                uu.PostMessageW(h, 0x0010, 0, 0)
+        return True
+
+    uu.EnumWindows(cb, 0)
+
 def kill():
     subprocess.run(["powershell", "-NoProfile", "-Command",
                     "Get-Process -Name SpaceSift* -ErrorAction SilentlyContinue | Stop-Process -Force"],
@@ -58,7 +81,7 @@ def logtxt():
 
 
 def shot(name):
-    subprocess.run([sys.executable, "shot.py", "SpaceSift", name], cwd=ROOT, capture_output=True)
+    subprocess.run([sys.executable, "shot.py", "SpaceSift Native", name], cwd=ROOT, capture_output=True)
 
 
 def row_centers(png, x=1000, y0=250, y1=820):
@@ -103,6 +126,7 @@ class App:
 def main():
     if os.path.exists(DEFAULT_LOG):
         os.remove(DEFAULT_LOG)
+    close_test_windows()
     kill(); time.sleep(1.2)
     env = dict(os.environ)
     env["SPACESIFT_ROOT"] = ROOT_DIR
@@ -141,22 +165,22 @@ def main():
 
     # 建内容索引前先把三个页签的基本用例跑掉
     def to_deep():
-        app.click(965, 203)
+        app.click(976, 222)
 
-    case("deep_row0", to_deep, 300)
-    case("deep_row1", None, 350)
-    case("deep_row2", None, 400)
+    case("deep_row0", to_deep, 374)
+    case("deep_row1", None, 422)
+    case("deep_row2", None, 470)
 
     # 检索结果（文件名搜索）
     def to_search():
-        app.click(1036, 203)      # 检索结果页签
+        app.click(1039, 222)      # 检索结果页签
         app.click(950, 53)        # 搜索框
         from winmsg import App as WM
         WM().text("md")
         time.sleep(0.3)
-        app.click(1148, 53)       # 搜索
+        app.click(1160, 53)       # 搜索
         time.sleep(1.5)
-    case("search_row0", to_search, 300)
+    case("search_row0", to_search, 374)
 
     print()
     print("=" * 70)

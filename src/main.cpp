@@ -248,61 +248,63 @@ static UiTheme MakeTheme(bool dark) {
     UiTheme t;
     t.dark = dark;
     if (dark) {
-        t.windowBg      = RGBA(32, 33, 36);
-        t.childBg       = RGBA(41, 42, 45);
-        t.cardBg        = RGBA(41, 42, 45);
-        t.cardHover     = RGBA(53, 54, 58);
-        t.cardSelected  = RGBA(46, 58, 78);
-        t.border        = RGBA(60, 64, 67);
-        t.borderStrong  = RGBA(95, 99, 104);
-        t.inputBg       = RGBA(41, 42, 45);
-        t.tabBg         = RGBA(53, 54, 58);
-        t.text          = RGBA(232, 234, 237);
-        t.textDim       = RGBA(154, 160, 166);
-        t.textFaint     = RGBA(128, 134, 139);
-        t.accent        = RGBA(138, 180, 248);
-        t.accentHover   = RGBA(174, 203, 250);
-        t.accentText    = RGBA(32, 33, 36);
-        t.brand         = RGBA(26, 115, 232);
-        t.success       = RGBA(129, 201, 149);
-        t.warning       = RGBA(253, 214, 99);
-        t.danger        = RGBA(242, 139, 130);
-        t.canvas        = RGBA(23, 24, 26);
-        t.titleOverlay  = RGBA(0, 0, 0, 0.55f);
-        t.sizeOverlay   = RGBA(0, 0, 0, 0.45f);
-        t.blockText     = RGBA(232, 234, 237);
-        t.blockSubText  = RGBA(189, 193, 198);
-        t.blockBorder   = RGBA(0, 0, 0, 0.50f);
-        t.fileBlock     = RGBA(60, 64, 67);
-        t.dimBg         = RGBA(0, 0, 0, 0.40f);
+        // 暗色：三层灰（页面 / 面板 / 卡片）拉开层次，边框只做极轻的分隔
+        t.windowBg      = RGBA(24, 26, 30);
+        t.childBg       = RGBA(33, 35, 40);
+        t.cardBg        = RGBA(39, 42, 47);
+        t.cardHover     = RGBA(48, 51, 57);
+        t.cardSelected  = RGBA(40, 56, 80);
+        t.border        = RGBA(52, 56, 63);
+        t.borderStrong  = RGBA(80, 85, 94);
+        t.inputBg       = RGBA(34, 37, 43);
+        t.tabBg         = RGBA(40, 43, 49);
+        t.text          = RGBA(231, 233, 238);
+        t.textDim       = RGBA(163, 169, 178);
+        t.textFaint     = RGBA(144, 150, 160);
+        t.accent        = RGBA(112, 165, 246);
+        t.accentHover   = RGBA(146, 190, 255);
+        t.accentText    = RGBA(21, 23, 27);
+        t.brand         = RGBA(38, 106, 200);
+        t.success       = RGBA(112, 190, 144);
+        t.warning       = RGBA(232, 180, 92);
+        t.danger        = RGBA(236, 122, 112);
+        t.canvas        = RGBA(19, 21, 25);
+        t.titleOverlay  = RGBA(0, 0, 0, 0.62f);
+        t.sizeOverlay   = RGBA(0, 0, 0, 0.38f);
+        t.blockText     = RGBA(233, 235, 240);
+        t.blockSubText  = RGBA(196, 200, 208);
+        t.blockBorder   = RGBA(0, 0, 0, 0.45f);
+        t.fileBlock     = RGBA(58, 62, 70);
+        t.dimBg         = RGBA(0, 0, 0, 0.58f);
     } else {
-        t.windowBg      = RGBA(255, 255, 255);
+        // 亮色：页面用浅灰，卡片用纯白，边框压到几乎看不见
+        t.windowBg      = RGBA(246, 247, 249);
         t.childBg       = RGBA(255, 255, 255);
         t.cardBg        = RGBA(255, 255, 255);
-        t.cardHover     = RGBA(241, 243, 244);
-        t.cardSelected  = RGBA(232, 240, 254);
-        t.border        = RGBA(218, 220, 224);
-        t.borderStrong  = RGBA(189, 193, 198);
-        t.inputBg       = RGBA(241, 243, 244);
-        t.tabBg         = RGBA(241, 243, 244);
-        t.text          = RGBA(32, 33, 36);
-        t.textDim       = RGBA(95, 99, 104);
-        t.textFaint     = RGBA(128, 134, 139);
-        t.accent        = RGBA(26, 115, 232);
-        t.accentHover   = RGBA(23, 101, 204);
+        t.cardHover     = RGBA(241, 244, 248);
+        t.cardSelected  = RGBA(229, 239, 254);
+        t.border        = RGBA(227, 230, 235);
+        t.borderStrong  = RGBA(198, 204, 212);
+        t.inputBg       = RGBA(239, 242, 246);
+        t.tabBg         = RGBA(240, 243, 247);
+        t.text          = RGBA(26, 28, 32);
+        t.textDim       = RGBA(78, 84, 94);
+        t.textFaint     = RGBA(100, 106, 116);
+        t.accent        = RGBA(37, 99, 235);
+        t.accentHover   = RGBA(29, 78, 190);
         t.accentText    = RGBA(255, 255, 255);
-        t.brand         = RGBA(26, 115, 232);
-        t.success       = RGBA(24, 128, 56);
-        t.warning       = RGBA(227, 116, 0);
-        t.danger        = RGBA(217, 48, 37);
-        t.canvas        = RGBA(241, 243, 244);
-        t.titleOverlay  = RGBA(255, 255, 255, 0.78f);
-        t.sizeOverlay   = RGBA(255, 255, 255, 0.62f);
-        t.blockText     = RGBA(32, 33, 36);
-        t.blockSubText  = RGBA(95, 99, 104);
-        t.blockBorder   = RGBA(0, 0, 0, 0.08f);
-        t.fileBlock     = RGBA(218, 220, 224);
-        t.dimBg         = RGBA(32, 33, 36, 0.32f);
+        t.brand         = RGBA(37, 99, 235);
+        t.success       = RGBA(22, 122, 66);
+        t.warning       = RGBA(196, 108, 12);
+        t.danger        = RGBA(202, 46, 40);
+        t.canvas        = RGBA(241, 243, 246);
+        t.titleOverlay  = RGBA(255, 255, 255, 0.80f);
+        t.sizeOverlay   = RGBA(255, 255, 255, 0.64f);
+        t.blockText     = RGBA(26, 28, 32);
+        t.blockSubText  = RGBA(88, 94, 103);
+        t.blockBorder   = RGBA(0, 0, 0, 0.07f);
+        t.fileBlock     = RGBA(214, 218, 224);
+        t.dimBg         = RGBA(24, 26, 30, 0.38f);
     }
     return t;
 }
@@ -327,23 +329,24 @@ static void ApplyTheme() {
     g_ui = MakeTheme(g_darkTheme);
     ImGuiStyle& s = ImGui::GetStyle();
 
+    // 圆角只用两档：控件 8，容器 12。之前 8/9/10/12 混用，一眼能看出拼凑感。
     s.WindowRounding    = 0.0f;
     s.ChildRounding     = 12.0f;
-    s.FrameRounding     = 9.0f;
-    s.PopupRounding     = 12.0f;
-    s.ScrollbarRounding = 9.0f;
-    s.GrabRounding      = 9.0f;
+    s.FrameRounding     = 8.0f;
+    s.PopupRounding     = 10.0f;
+    s.ScrollbarRounding = 8.0f;
+    s.GrabRounding      = 8.0f;
     s.WindowBorderSize  = 0.0f;
-    s.FrameBorderSize   = 1.0f;
     s.ChildBorderSize   = 1.0f;
     s.FrameBorderSize   = 0.0f;
     s.PopupBorderSize   = 1.0f;
-    s.WindowPadding     = ImVec2(18, 14);
-    s.FramePadding      = ImVec2(12, 7);
-    s.ItemSpacing       = ImVec2(10, 8);
-    s.ItemInnerSpacing  = ImVec2(8, 6);
-    s.ScrollbarSize     = 12.0f;
+    s.WindowPadding     = ImVec2(20, 16);
+    s.FramePadding      = ImVec2(11, 7);
+    s.ItemSpacing       = ImVec2(8, 8);
+    s.ItemInnerSpacing  = ImVec2(7, 5);
+    s.ScrollbarSize     = 10.0f;
     s.GrabMinSize       = 10.0f;
+    s.SeparatorTextBorderSize = 1.0f;
 
     s.Colors[ImGuiCol_WindowBg]             = g_ui.windowBg;
     s.Colors[ImGuiCol_ChildBg]              = g_ui.childBg;
@@ -1987,13 +1990,15 @@ static float SegmentedWidth(const char* const* labels, int count) {
 
 // iOS 风格分段控件：一个胶囊底 + 选中项一个强调色胶囊。
 static int Segmented(const char* id, const char* const* labels, int count, int current,
-                     float height = 32.0f, float* outWidth = nullptr) {
+                     float height = 32.0f, float* outWidth = nullptr, bool neutral = false) {
     ImGui::PushID(id);
     float total = SegmentedWidth(labels, count);
     ImVec2 p = ImGui::GetCursorScreenPos();
     ImDrawList* dl = ImGui::GetWindowDrawList();
     dl->AddRectFilled(p, ImVec2(p.x + total, p.y + height),
-                      ThemeColor(g_ui.tabBg), height * 0.5f);
+                      ThemeColor(g_ui.inputBg), height * 0.5f);
+    dl->AddRect(p, ImVec2(p.x + total, p.y + height), ThemeColor(g_ui.border),
+                height * 0.5f, 0, 1.0f);
 
     const float innerH = height - 6.0f;
     float x = p.x + 3.0f;
@@ -2003,20 +2008,30 @@ static int Segmented(const char* id, const char* const* labels, int count, int c
         ImVec2 b(x + w, p.y + 3.0f + innerH);
         bool active = (i == current);
         bool hovered = ImGui::IsMouseHoveringRect(a, b) && ImGui::IsWindowHovered();
-        if (active)
-            dl->AddRectFilled(a, b, ThemeColor(g_ui.accent), innerH * 0.5f);
-        else if (hovered)
+        if (active) {
+            if (neutral) {
+                dl->AddRectFilled(a, b, ThemeColor(g_ui.cardSelected), innerH * 0.5f);
+            } else {
+                ImVec4 pill = g_ui.accent;
+                pill.w = g_darkTheme ? 0.22f : 0.16f;
+                dl->AddRectFilled(a, b, ThemeColor(pill), innerH * 0.5f);
+                ImVec4 edge = g_ui.accent;
+                edge.w = 0.55f;
+                dl->AddRect(a, b, ThemeColor(edge), innerH * 0.5f, 0, 1.0f);
+            }
+        } else if (hovered) {
             dl->AddRectFilled(a, b, ThemeColor(g_ui.cardHover), innerH * 0.5f);
+        }
 
         ImGui::SetCursorScreenPos(a);
         ImGui::InvisibleButton(labels[i], ImVec2(w, innerH));
         if (ImGui::IsItemClicked()) current = i;
 
         ImVec2 ts = ImGui::CalcTextSize(labels[i]);
+        const ImVec4 fg = active ? (neutral ? g_ui.text : g_ui.accent)
+                                 : (hovered ? g_ui.text : g_ui.textDim);
         dl->AddText(ImVec2((a.x + b.x - ts.x) * 0.5f, (a.y + b.y - ts.y) * 0.5f),
-                    ThemeColor(active ? g_ui.accentText
-                                      : (hovered ? g_ui.text : g_ui.textDim)),
-                    labels[i]);
+                    ThemeColor(fg), labels[i]);
         x += w + 2.0f;
     }
     ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + height));
@@ -2037,7 +2052,7 @@ static bool ThemeCheckbox(const char* id, bool* value, float size = 18.0f) {
     ImDrawList* dl = ImGui::GetWindowDrawList();
     ImU32 bg = *value ? ThemeColor(g_ui.accent) : ThemeColor(g_ui.inputBg);
     ImU32 bd = *value ? ThemeColor(g_ui.accent)
-                      : ThemeColor(hovered ? g_ui.borderStrong : g_ui.border);
+                      : ThemeColor(hovered ? g_ui.accent : g_ui.borderStrong);
     dl->AddRectFilled(p, ImVec2(p.x + size, p.y + size), bg, 5.0f);
     dl->AddRect(p, ImVec2(p.x + size, p.y + size), bd, 5.0f, 0, 1.0f);
     if (*value) {
@@ -2052,9 +2067,10 @@ static bool ThemeCheckbox(const char* id, bool* value, float size = 18.0f) {
     return *value;
 }
 
-// 幽灵按钮：只有细边框和极浅的底色，适合次级操作。
+// 次级按钮：平时无边框无底色，鼠标移上去才浮出一层底色。
+// 工具栏里堆一排带框按钮会显得很吵，这样只有「扫描」这种主操作是实心的。
 static bool GhostButton(const char* label, const ImVec2& size = ImVec2(0, 0)) {
-    ImGui::PushStyleColor(ImGuiCol_Button, g_ui.cardBg);
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, g_ui.cardHover);
     ImGui::PushStyleColor(ImGuiCol_ButtonActive, g_ui.cardSelected);
     ImGui::PushStyleColor(ImGuiCol_Border, g_ui.border);
@@ -2063,6 +2079,72 @@ static bool GhostButton(const char* label, const ImVec2& size = ImVec2(0, 0)) {
     ImGui::PopStyleVar();
     ImGui::PopStyleColor(4);
     return r;
+}
+
+// 文字链：面包屑行里的「上一层 / 回到根」，hover 变强调色并加下划线。
+static bool TextLink(const char* label) {
+    ImVec2 ts = ImGui::CalcTextSize(label);
+    ImVec2 p = ImGui::GetCursorScreenPos();
+    ImGui::InvisibleButton(label, ImVec2(ts.x + 8.0f, ImGui::GetTextLineHeight() + 8.0f));
+    const bool hovered = ImGui::IsItemHovered();
+    const bool clicked = ImGui::IsItemClicked();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImVec2 q(p.x + 4.0f, p.y + (ImGui::GetItemRectSize().y - ts.y) * 0.5f);
+    dl->AddText(q, ThemeColor(hovered ? g_ui.accent : g_ui.textDim), label);
+    if (hovered)
+        dl->AddLine(ImVec2(q.x, q.y + ts.y + 1.0f), ImVec2(q.x + ts.x, q.y + ts.y + 1.0f),
+                    ThemeColor(g_ui.accent), 1.0f);
+    return clicked;
+}
+
+// 右栏页签：下划线式。比胶囊更安静，也不会和「扫描」抢视线。
+static int TabBar(const char* id, const char* const* labels, int count, int current,
+                  float* outWidth = nullptr) {
+    ImGui::PushID(id);
+    const float h = 34.0f;
+    ImVec2 p = ImGui::GetCursorScreenPos();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+
+    float fullW = ImGui::GetContentRegionAvail().x;
+    dl->AddLine(ImVec2(p.x, p.y + h - 1), ImVec2(p.x + fullW, p.y + h - 1),
+                ThemeColor(g_ui.border), 1.0f);
+
+    float x = p.x;
+    for (int i = 0; i < count; ++i) {
+        ImVec2 ts = ImGui::CalcTextSize(labels[i]);
+        const float w = ts.x + 20.0f;
+        ImVec2 a(x, p.y);
+        ImVec2 b(x + w, p.y + h - 1);
+        ImGui::SetCursorScreenPos(a);
+        ImGui::InvisibleButton(labels[i], ImVec2(w, h - 1));
+        const bool hovered = ImGui::IsItemHovered();
+        if (ImGui::IsItemClicked()) current = i;
+        const bool active = (i == current);
+
+        dl->AddText(ImVec2((a.x + b.x - ts.x) * 0.5f, a.y + (h - 1 - ts.y) * 0.5f),
+                    ThemeColor(active ? g_ui.text : (hovered ? g_ui.text : g_ui.textDim)),
+                    labels[i]);
+        if (active)
+            dl->AddRectFilled(ImVec2(a.x + 6, b.y - 2.0f), ImVec2(b.x - 6, b.y + 2.0f),
+                              ThemeColor(g_ui.accent), 2.0f);
+        x += w;
+    }
+    ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + h));
+    ImGui::Dummy(ImVec2(fullW, 0.0f));
+    ImGui::PopID();
+    if (outWidth) *outWidth = x - p.x;
+    return current;
+}
+
+// 1px 竖向分隔线，用来把工具栏分组。
+static void ToolbarDivider(float height = 20.0f) {
+    ImGui::SameLine(0, 10);
+    ImVec2 p = ImGui::GetCursorScreenPos();
+    float y0 = p.y + (ImGui::GetFrameHeight() - height) * 0.5f;
+    ImGui::GetWindowDrawList()->AddLine(ImVec2(p.x, y0), ImVec2(p.x, y0 + height),
+                                        ThemeColor(g_ui.border), 1.0f);
+    ImGui::Dummy(ImVec2(1.0f, height));
+    ImGui::SameLine(0, 10);
 }
 
 // 主操作按钮：实心强调色。
@@ -2086,6 +2168,30 @@ static bool DangerButton(const char* label, const ImVec2& size = ImVec2(0, 0)) {
     return r;
 }
 
+// 空状态：居中的一句标题 + 一行说明。比在左上角丢一句灰字更像是"设计过的"。
+static void EmptyState(const char* title, const char* body = nullptr) {
+    const float availY = ImGui::GetContentRegionAvail().y;
+    ImGui::Dummy(ImVec2(0, std::max(20.0f, availY * 0.22f)));
+    const float w = ImGui::GetContentRegionAvail().x;
+    const float pad = 24.0f;
+
+    ImVec2 ts = ImGui::CalcTextSize(title);
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, (w - ts.x) * 0.5f));
+    ImGui::TextColored(g_ui.textDim, "%s", title);
+
+    if (body && body[0]) {
+        ImGui::Dummy(ImVec2(0, 2));
+        ImGui::PushFont(g_fontSmall, 0.0f);
+        ImGui::PushStyleColor(ImGuiCol_Text, g_ui.textFaint);
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + pad);
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + std::max(120.0f, w - pad * 2));
+        ImGui::TextWrapped("%s", body);
+        ImGui::PopTextWrapPos();
+        ImGui::PopStyleColor();
+        ImGui::PopFont();
+    }
+}
+
 // ============================================================ 右栏卡片行
 
 // 一行圆角卡片：左侧复选框 + 标题（+ 可选徽标 / 副标题），右侧容量。
@@ -2098,8 +2204,8 @@ static bool RowCard(const char* id, const std::string& title, const std::string&
                     const std::string& subtitle = "") {
     ImGui::PushID(id);
 
-    const float rowH = 36.0f;
-    const float pad = 10.0f;
+    const float rowH = 38.0f;
+    const float pad = 8.0f;
     float avail = ImGui::GetContentRegionAvail().x;
     if (avail < 80.0f) avail = 80.0f;
     ImVec2 p0 = ImGui::GetCursorScreenPos();
@@ -2110,21 +2216,22 @@ static bool RowCard(const char* id, const std::string& title, const std::string&
     bool rowClicked = ImGui::IsItemClicked(ImGuiMouseButton_Left);
     bool rowRightClicked = ImGui::IsItemClicked(ImGuiMouseButton_Right);
 
+    // 默认不画底和框：列表靠 hover 浮出底色来分辨，一屏十几行不会被框线切碎。
     bool selected = checked && *checked;
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    ImU32 bg = selected ? ThemeColor(g_ui.cardSelected)
-                        : (hovered ? ThemeColor(g_ui.cardHover) : ThemeColor(g_ui.cardBg));
-    ImU32 bd = selected ? ThemeColor(g_ui.accent) : ThemeColor(g_ui.border);
-    dl->AddRectFilled(p0, ImVec2(p0.x + avail, p0.y + rowH), bg, 9.0f);
-    dl->AddRect(p0, ImVec2(p0.x + avail, p0.y + rowH), bd, 9.0f, 0, 1.0f);
     if (selected) {
-        dl->AddRectFilled(ImVec2(p0.x + 1, p0.y + 9), ImVec2(p0.x + 4, p0.y + rowH - 9),
+        dl->AddRectFilled(p0, ImVec2(p0.x + avail, p0.y + rowH),
+                          ThemeColor(g_ui.cardSelected), 8.0f);
+        dl->AddRectFilled(ImVec2(p0.x + 2, p0.y + 10), ImVec2(p0.x + 4.5f, p0.y + rowH - 10),
                           ThemeColor(g_ui.accent), 1.5f);
+    } else if (hovered) {
+        dl->AddRectFilled(p0, ImVec2(p0.x + avail, p0.y + rowH),
+                          ThemeColor(g_ui.cardHover), 8.0f);
     }
 
     // 自绘勾选框
-    ImGui::SetCursorScreenPos(ImVec2(p0.x + pad, p0.y + (rowH - 18.0f) * 0.5f));
-    ThemeCheckbox("##chk", checked, 18.0f);
+    ImGui::SetCursorScreenPos(ImVec2(p0.x + pad, p0.y + (rowH - 16.0f) * 0.5f));
+    ThemeCheckbox("##chk", checked, 16.0f);
 
     float textY = p0.y + (rowH - ImGui::GetTextLineHeight()) * 0.5f;
     std::string rs = right;
@@ -2134,8 +2241,8 @@ static bool RowCard(const char* id, const std::string& title, const std::string&
         rsW = ImGui::CalcTextSize(rs.c_str()).x;
         ImGui::PopFont();
     }
-    float rightX = p0.x + avail - rsW - pad;
-    float textX = p0.x + pad + 30.0f;
+    float rightX = p0.x + avail - rsW - pad - 4.0f;
+    float textX = p0.x + pad + 26.0f;
     float clipMax = std::max(textX + 1.0f, rightX - 8.0f);
 
     // 标题 + 徽标 + 副标题；整组裁剪到右侧容量文字左边
@@ -2150,7 +2257,7 @@ static bool RowCard(const char* id, const std::string& title, const std::string&
         ImGui::TextColored(g_ui.warning, "%s", badge);
         cx += ImGui::CalcTextSize(badge).x;
     }
-    if (!subtitle.empty() && cx + 10 < clipMax) {
+    if (!subtitle.empty() && cx + 12 < clipMax) {
         ImGui::PushFont(g_fontSmall, 0.0f);
         float sy = p0.y + (rowH - ImGui::GetTextLineHeight()) * 0.5f;
         ImGui::SetCursorScreenPos(ImVec2(cx + 10, sy));
@@ -2159,17 +2266,17 @@ static bool RowCard(const char* id, const std::string& title, const std::string&
     }
     ImGui::PopClipRect();
 
-    // 右侧容量（小字，绿色）
+    // 右侧容量：小字灰色。整列都绿会让"大小"抢走标题的注意力。
     {
         ImGui::PushFont(g_fontSmall, 0.0f);
         float sy = p0.y + (rowH - ImGui::GetTextLineHeight()) * 0.5f;
         ImGui::SetCursorScreenPos(ImVec2(rightX, sy));
-        ImGui::TextColored(g_ui.success, "%s", rs.c_str());
+        ImGui::TextColored(selected ? g_ui.text : g_ui.textDim, "%s", rs.c_str());
         ImGui::PopFont();
     }
 
     ImGui::SetCursorScreenPos(ImVec2(p0.x, p0.y + rowH));
-    ImGui::Dummy(ImVec2(avail, 6.0f));
+    ImGui::Dummy(ImVec2(avail, 2.0f));
 
     if (hovered && !tooltip.empty()) ImGui::SetTooltip("%s", tooltip.c_str());
     if (rowRightClicked) {
@@ -2346,15 +2453,15 @@ static void DrawContentSearchTab() {
 static void DrawRightPanel() {
     // ---- 标签行：三个页签在左，两个批量按钮贴右
     static const char* tabLabels[] = {"推荐清理", "深度清理", "检索结果"};
-    int nextTab = Segmented("tabs", tabLabels, 3, g_mode, 32.0f);
+    int nextTab = TabBar("tabs", tabLabels, 3, g_mode);
     if (nextTab != g_mode) g_mode = nextTab;
 
-    // 批量按钮靠右：基准图里它们和标签同一行；窄窗口放不下就换到下一行，避免压住页签
+    // 批量操作：右对齐的小按钮，单独一行，不和页签挤在一起
     float rightEdge = ImGui::GetWindowContentRegionMax().x;
-    const float kBatchW = 76.0f + 8.0f + 70.0f;
+    const float kBatchW = 72.0f + 6.0f + 66.0f;
     float batchX = rightEdge - kBatchW;
-    if (batchX > 286.0f) ImGui::SameLine(batchX);
-    else ImGui::SetCursorPosX(std::max(0.0f, batchX));   // 换行后靠右，别留一大片空白
+    if (batchX > 8.0f) ImGui::SameLine(batchX);
+    else ImGui::SetCursorPosX(std::max(0.0f, batchX));
     bool hasSafe = false;
     {
         std::lock_guard<std::mutex> lk(g_findMutex);
@@ -2366,7 +2473,7 @@ static void DrawRightPanel() {
         }
     }
     if (!hasSafe) ImGui::BeginDisabled();
-    if (GhostButton("全选安全项", ImVec2(76, 28))) {
+    if (GhostButton("全选安全项", ImVec2(72, 26))) {
         std::lock_guard<std::mutex> lk(g_findMutex);
         for (auto& f : g_findings) {
             if (!f.rule || f.rule->risk != rules::SAFE || f.size == 0) continue;
@@ -2374,11 +2481,10 @@ static void DrawRightPanel() {
                 if (InCurrentDir(p)) { g_selected.insert(f.rule->id); break; }
         }
     }
-    ImGui::SameLine();
-    if (GhostButton("取消全选", ImVec2(70, 28))) g_selected.clear();
+    ImGui::SameLine(0, 6);
+    if (GhostButton("取消全选", ImVec2(66, 26))) g_selected.clear();
     if (!hasSafe) ImGui::EndDisabled();
-
-    ImGui::Separator();
+    ImGui::Dummy(ImVec2(0, 2));
 
     // ---- 列表区（底部留 34px 给状态栏）
     ImGui::BeginChild("##rightlist", ImVec2(0, -34), false);
@@ -2415,13 +2521,17 @@ static void DrawRightPanel() {
 
         if (rows.empty()) {
             if (!g_detecting.load() && g_scanSeconds == 0 && !g_scanning.load()) {
-                ImGui::TextDisabled("先扫描一个目录，这里会列出当前目录下可清理的缓存项。");
+                EmptyState("还没有检查", "扫描一个目录后，这里会列出当前目录下可清理的缓存项。");
             } else if (!g_detecting.load()) {
-                ImGui::TextDisabled("「%s」下没有可清理的缓存项。", CurrentDirPath().c_str());
-                ImGui::TextDisabled("（缓存规则只覆盖系统/应用缓存目录；其他盘的内容不会出现在这里）");
+                char body[256];
                 if (g_currentFileTotal > 0)
-                    ImGui::TextDisabled("这个目录下还有 %d 个直接文件，可在「深度清理」查看。",
-                                        g_currentFileTotal);
+                    snprintf(body, sizeof body,
+                             "缓存规则只覆盖系统和应用的缓存目录。当前目录下还有 %d 个直接文件，"
+                             "可以在「深度清理」里看。",
+                             g_currentFileTotal);
+                else
+                    snprintf(body, sizeof body, "缓存规则只覆盖系统和应用的缓存目录。");
+                EmptyState("这里没有可清理的缓存项", body);
             }
         } else {
             for (auto& f : rows) {
@@ -2442,9 +2552,9 @@ static void DrawRightPanel() {
     } else if (g_mode == 1) {
         if (g_scanning.load()) {
             // 扫描线程正在重建 g_entries，这里直接读会越界
-            ImGui::TextDisabled("扫描进行中，完成后显示这个目录的子项。");
+            EmptyState("正在扫描", "扫完这里会列出当前目录下的每一项。");
         } else if (g_current < 0 || g_entries.empty()) {
-            ImGui::TextDisabled("先扫描一个目录，这里会列出它下面的每一项。");
+            EmptyState("还没有内容", "先在上面选一个目录扫描，这里会按大小列出子项。");
         } else {
             std::vector<Blk> children;
             GatherViewChildren(children, 0);
@@ -2460,7 +2570,8 @@ static void DrawRightPanel() {
                 std::string sz = FormatBytes(c.size);
                 std::string rowId = c.isFile ? ("deepf:" + path)
                                              : ("deep:" + std::to_string(c.idx));
-                bool goIn = RowCard(rowId.c_str(), c.name, sz, &now, "", path);
+                const std::string rowTitle = c.isFile ? c.name : (c.name + "/");
+                bool goIn = RowCard(rowId.c_str(), rowTitle, sz, &now, "", path);
                 if (now != was) {
                     if (now) g_deepSelected[path] = c.size;
                     else g_deepSelected.erase(path);
@@ -2479,9 +2590,9 @@ static void DrawRightPanel() {
         DrawContentSearchTab();
     } else {
         if (g_searchQuery.empty()) {
-            ImGui::TextDisabled("在上面搜索框输入文件名。");
+            EmptyState("还没有搜索", "在上面搜索框输入文件名，回车或点搜索。Ctrl+F 可以直接跳过去。");
         } else if (g_hits.empty()) {
-            ImGui::TextDisabled("没有匹配「%s」的文件。", g_searchQuery.c_str());
+            EmptyState("没有命中", "换个关键词试试，或者确认扫描范围是不是当前目录。");
         } else {
             ImGui::TextDisabled("命中 %d 项（按大小排序，勾选可加入待清理）",
                                 (int)g_hits.size());
@@ -2523,21 +2634,34 @@ static void DrawRightPanel() {
     for (auto& kv : g_deepSelected) { selectedBytes += kv.second; ++selectedCount; }
     for (auto& kv : g_hitSelected) { selectedBytes += kv.second; ++selectedCount; }
 
+    // 底部操作条：上面一条发丝线，左边选中量，右边主按钮
+    {
+        ImVec2 fp = ImGui::GetCursorScreenPos();
+        float fw = ImGui::GetContentRegionAvail().x;
+        ImGui::GetWindowDrawList()->AddLine(ImVec2(fp.x, fp.y + 2), ImVec2(fp.x + fw, fp.y + 2),
+                                            ThemeColor(g_ui.border), 1.0f);
+    }
+    ImGui::Dummy(ImVec2(0, 4));
+
     std::string selSz = FormatBytes(selectedBytes);
-    ImGui::TextColored(g_ui.success, "%s", selSz.c_str());
+    ImGui::TextColored(selectedCount > 0 ? g_ui.text : g_ui.textDim, "%s", selSz.c_str());
     ImGui::SameLine();
     ImGui::PushFont(g_fontSmall, 0.0f);
-    ImGui::TextDisabled("· %d 项", selectedCount);
+    ImGui::TextDisabled("%d 项", selectedCount);
     ImGui::PopFont();
-    ImGui::SameLine(std::max(180.0f, ImGui::GetWindowContentRegionMax().x - 100.0f));
+    ImGui::SameLine(std::max(180.0f, ImGui::GetWindowContentRegionMax().x - 104.0f));
 
-    bool canClean = selectedCount > 0 && !g_cleaning.load();
-    if (!canClean) ImGui::BeginDisabled();
-    if (PrimaryButton(g_cleaning.load() ? "清理中…" : "清理选中项", ImVec2(96, 28))) {
+    const bool canClean = selectedCount > 0 && !g_cleaning.load();
+    if (!canClean) {
+        ImGui::BeginDisabled();
+        GhostButton(g_cleaning.load() ? "清理中" : "清理选中项", ImVec2(100, 30));
+        ImGui::EndDisabled();
+    } else if (PrimaryButton(g_cleaning.load() ? "清理中" : "清理选中项", ImVec2(100, 30))) {
         // 任何删除都要先弹窗确认 —— 这一步不可撤销，不给用户留反悔机会
         ImGui::OpenPopup("##confirmClean");
     }
-    if (!canClean) ImGui::EndDisabled();
+    ImGui::PushStyleVar(ImGuiStyleVar_PopupRounding, 12.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(20, 16));
 
     if (ImGui::BeginPopupModal("##confirmClean", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
         std::vector<rules::Finding> fsnap;
@@ -2545,13 +2669,16 @@ static void DrawRightPanel() {
             std::lock_guard<std::mutex> lk(g_findMutex);
             fsnap = g_findings;
         }
-        ImGui::Text("确认删除以下内容？");
-        ImGui::Separator();
-        ImGui::TextDisabled("推荐清理 %d 项 · 深度勾选 %d 项 · 检索勾选 %d 项",
+        ImGui::Dummy(ImVec2(0, 2));
+        ImGui::TextUnformatted("确认删除这些内容");
+        ImGui::Dummy(ImVec2(0, 2));
+        ImGui::TextDisabled("推荐清理 %d 项 · 深度勾选 %d 项 · 检索勾选 %d 项 · 合计 %s",
                             (int)g_selected.size(), (int)g_deepSelected.size(),
-                            (int)g_hitSelected.size());
-        ImGui::TextDisabled("合计 %s", selSz.c_str());
-        ImGui::Separator();
+                            (int)g_hitSelected.size(), selSz.c_str());
+        ImGui::Dummy(ImVec2(0, 8));
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, g_ui.inputBg);
+        ImGui::PushStyleColor(ImGuiCol_Border, g_ui.border);
+        ImGui::BeginChild("##cleanlist", ImVec2(500, 152), true);
         int shown = 0;
         const int kMaxShown = 8;
         for (auto& f : fsnap) {
@@ -2573,17 +2700,25 @@ static void DrawRightPanel() {
             ImGui::BulletText("%s", kv.first.c_str());
         }
         if (selectedCount > kMaxShown)
-            ImGui::TextDisabled("…还有 %d 项未列出", selectedCount - kMaxShown);
-        ImGui::Separator();
+            ImGui::TextDisabled("还有 %d 项未列出", selectedCount - kMaxShown);
+        ImGui::EndChild();
+        ImGui::PopStyleColor(2);
+        ImGui::Dummy(ImVec2(0, 12));
         ImGui::TextColored(g_ui.danger, "直接删除，不进回收站，无法撤销。");
-        if (DangerButton("确认删除", ImVec2(100, 0))) {
+        ImGui::Dummy(ImVec2(0, 8));
+
+        // 按钮右对齐：取消在左，确认在右（危险操作放最后）
+        const float btnRow = ImGui::GetContentRegionMax().x - (92.0f + 8.0f + 104.0f);
+        if (btnRow > 0) ImGui::SetCursorPosX(btnRow);
+        if (GhostButton("取消", ImVec2(92, 30))) ImGui::CloseCurrentPopup();
+        ImGui::SameLine(0, 8);
+        if (DangerButton("确认删除", ImVec2(104, 30))) {
             StartClean();
             ImGui::CloseCurrentPopup();
         }
-        ImGui::SameLine();
-        if (GhostButton("取消", ImVec2(80, 0))) ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
     }
+    ImGui::PopStyleVar(2);
 }
 
 // ============================================================ 主界面
@@ -2698,7 +2833,7 @@ static void DrawStatusStrip() {
     char left[192];
     if (scanning) {
         if (known)
-            snprintf(left, sizeof left, "%.1f%%   %s / %s", pct * 100.0f,
+            snprintf(left, sizeof left, "%.0f%%   %s / %s", pct * 100.0f,
                      FormatBytes(scanned).c_str(), FormatBytes(denom).c_str());
         else
             snprintf(left, sizeof left, "已扫 %s · %lld 文件",
@@ -2707,17 +2842,18 @@ static void DrawStatusStrip() {
         snprintf(left, sizeof left, "%lld 文件 · %s · %.1f 秒",
                  (long long)g_fileCount.load(), FormatBytes(scanned).c_str(), g_scanSeconds);
     } else {
-        snprintf(left, sizeof left, "就绪 · 选择一个位置开始");
+        snprintf(left, sizeof left, "就绪 · 选一个位置开始");
     }
 
     std::string right;
     ImVec4 rightColor = g_ui.textFaint;
+    bool warn = false;
     if (g_cleaning.load()) {
         right = "正在清理 " + std::to_string(g_cleanDone.load()) + "/" +
-                std::to_string(g_cleanTotal.load()) + " …";
+                std::to_string(g_cleanTotal.load());
         rightColor = g_ui.warning;
+        warn = true;
     } else if (!g_lastCleanMsg.empty()) {
-        // 提示只显示 6 秒，否则上一条「路径已复制」会永远挂在那儿
         static std::string shownMsg;
         static double shownAt = 0.0;
         if (shownMsg != g_lastCleanMsg) {
@@ -2726,7 +2862,7 @@ static void DrawStatusStrip() {
         }
         if (ImGui::GetTime() - shownAt < 6.0) {
             right = g_lastCleanMsg;
-            rightColor = g_ui.success;
+            rightColor = g_ui.textDim;
         }
     } else if (scanning) {
         std::string cur;
@@ -2736,13 +2872,14 @@ static void DrawStatusStrip() {
         }
         if (cur.size() > 58) cur = "…" + cur.substr(cur.size() - 57);
         right = "扫描中 · " + std::to_string(g_visited.load()) + " 目录 · " + cur;
-        rightColor = g_ui.textDim;
+        rightColor = g_ui.textFaint;
     } else if (g_contentBusy.load()) {
-        right = "建立内容索引 · 已写入 " + std::to_string(content::g_parsed.load()) + " 个 …";
+        right = "建立内容索引 · 已写入 " + std::to_string(content::g_parsed.load()) + " 个";
         rightColor = g_ui.warning;
+        warn = true;
     } else if (g_detecting.load()) {
         right = GetDetectMsg();
-        rightColor = g_ui.textDim;
+        rightColor = g_ui.textFaint;
     } else if (g_scanSeconds > 0) {
         right = "扫描完成";
         rightColor = g_ui.textFaint;
@@ -2750,33 +2887,30 @@ static void DrawStatusStrip() {
 
     ImVec2 p = ImGui::GetCursorScreenPos();
     float w = ImGui::GetContentRegionAvail().x;
-    const float h = 32.0f;
+    const float h = 30.0f;
     ImGui::Dummy(ImVec2(w, h));
 
+    // 只是一行信息，不再套一层卡片：上面工具栏、下面内容区，中间不需要第三层框。
+    const float barX = p.x + 2.0f;
+    const float barW = 116.0f;
+    const float barH = 4.0f;
+    const float barY = p.y + (h - barH) * 0.5f;
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    dl->AddRectFilled(p, ImVec2(p.x + w, p.y + h), ThemeColor(g_ui.cardBg), 10.0f);
-    dl->AddRect(p, ImVec2(p.x + w, p.y + h), ThemeColor(g_ui.border), 10.0f, 0, 1.0f);
-
-    const float barX = p.x + 12.0f;
-    const float barW = 150.0f;
-    const float barH = 6.0f;
-    float barY = p.y + (h - barH) * 0.5f;
     dl->AddRectFilled(ImVec2(barX, barY), ImVec2(barX + barW, barY + barH),
                       ThemeColor(g_ui.border), barH * 0.5f);
-    float fill = barW * pct;
-    if (fill > 0.5f)
-        dl->AddRectFilled(ImVec2(barX, barY), ImVec2(barX + fill, barY + barH),
-                          ThemeColor(g_ui.accent), barH * 0.5f);
+    if (pct > 0.01f)
+        dl->AddRectFilled(ImVec2(barX, barY), ImVec2(barX + barW * pct, barY + barH),
+                          ThemeColor(warn ? g_ui.warning : g_ui.accent), barH * 0.5f);
 
     ImGui::PushFont(g_fontSmall, 0.0f);
-    float ty = p.y + (h - ImGui::GetTextLineHeight()) * 0.5f;
+    const float ty = p.y + (h - ImGui::GetTextLineHeight()) * 0.5f;
     ImGui::SetCursorScreenPos(ImVec2(barX + barW + 12.0f, ty));
     ImGui::TextColored(g_ui.textDim, "%s", left);
 
     if (!right.empty()) {
-        float tw = ImGui::CalcTextSize(right.c_str()).x;
-        float rx = p.x + w - tw - 12.0f;
-        float minX = barX + barW + 220.0f;
+        const float tw = ImGui::CalcTextSize(right.c_str()).x;
+        const float rx = p.x + w - tw - 12.0f;
+        const float minX = barX + barW + 200.0f;
         if (rx > minX) {
             ImGui::SetCursorScreenPos(ImVec2(rx, ty));
             ImGui::TextColored(rightColor, "%s", right.c_str());
@@ -2790,6 +2924,130 @@ static void DrawStatusStrip() {
     ImGui::PopFont();
 
     ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + h));
+}
+
+// 工具栏统一高度：控件都是 30px，基线才对得齐。
+static const float kCtrlH = 30.0f;
+
+// 顶栏：位置组（磁盘 / 路径 / 浏览 / 扫描）· 搜索组（模式 / 输入 / 搜索）· 主题
+//
+// 宽度从右边界倒推：主题开关贴右，搜索组整体右对齐，路径框吃掉剩下的空间。
+// 之前用「预留 N 像素」估算法，窗口一变窄主题开关就被挤出右边界。
+static void DrawTopBar() {
+    const float padY = std::max(2.0f, (kCtrlH - ImGui::GetTextLineHeight() * 1.0f) * 0.5f);
+    static const char* kModes[] = {"文件名", "内容"};
+    static const char* kThemes[] = {"亮色", "暗色"};
+    const float modeW = SegmentedWidth(kModes, 2);
+    const float themeW = SegmentedWidth(kThemes, 2);
+    const float E = ImGui::GetWindowContentRegionMax().x;   // 内容区右边界
+
+    // 搜索组：模式 · 输入 · 按钮；输入框宽度跟着窗口走，但夹在 180..300 之间
+    float searchW = E * 0.22f;
+    if (searchW < 180.0f) searchW = 180.0f;
+    if (searchW > 300.0f) searchW = 300.0f;
+    const float searchBtnW = 52.0f;
+    const float blockW = modeW + 8.0f + searchW + 8.0f + searchBtnW;
+    const float themeX = E - themeW;
+    const float blockRight = themeX - 24.0f;
+    const float modeX = blockRight - blockW;
+
+    DrawLogo();
+    ImGui::SameLine(0, 14);
+
+    // ---- 位置组 ----
+    const float browseW = 52.0f, scanW = 64.0f;
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(11, padY));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
+    ImGui::PushStyleColor(ImGuiCol_Border, g_ui.borderStrong);
+    ImGui::SetNextItemWidth(118);
+    const char* driveLabel = (g_driveIdx >= 0 && g_driveIdx < (int)g_drives.size())
+                                 ? g_drives[g_driveIdx].c_str() : "选择磁盘";
+    if (ImGui::BeginCombo("##drive", driveLabel)) {
+        for (int i = 0; i < (int)g_drives.size(); ++i) {
+            if (ImGui::Selectable(g_drives[i].c_str(), g_driveIdx == i)) {
+                g_driveIdx = i;
+                snprintf(g_pathBuf, sizeof g_pathBuf, "%s", g_drives[i].c_str());
+                g_rootPath = g_pathBuf;
+            }
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::SameLine(0, 8);
+
+    {
+        const float pathX = ImGui::GetCursorPosX();
+        float pathW = modeX - 16.0f - (browseW + 8.0f + scanW) - pathX;
+        if (pathW < 160.0f) pathW = 160.0f;
+        ImGui::SetNextItemWidth(pathW);
+    }
+    if (ImGui::InputText("##path", g_pathBuf, sizeof g_pathBuf)) g_rootPath = g_pathBuf;
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar(2);
+    ImGui::SameLine(0, 8);
+
+    if (GhostButton("浏览", ImVec2(browseW, kCtrlH))) {
+        std::string picked;
+        if (BrowseFolder(picked)) {
+            snprintf(g_pathBuf, sizeof g_pathBuf, "%s", picked.c_str());
+            g_rootPath = g_pathBuf;
+        }
+    }
+    ImGui::SameLine(0, 8);
+
+    if (g_scanning.load()) {
+        if (GhostButton(g_paused.load() ? "继续" : "暂停", ImVec2(52, kCtrlH)))
+            g_paused = !g_paused.load();
+        ImGui::SameLine(0, 6);
+        if (DangerButton(g_stopReq.load() ? "结束中" : "结束", ImVec2(52, kCtrlH))) g_stopReq = true;
+    } else {
+        if (PrimaryButton("扫描", ImVec2(scanW, kCtrlH))) StartScan(g_pathBuf);
+    }
+
+    if (!g_scanning.load()) ToolbarDivider(kCtrlH - 10);
+
+    // ---- 搜索组（按算好的绝对位置摆放，不受前面宽度影响）----
+    ImGui::SameLine(std::max(ImGui::GetCursorPosX() + 12.0f, modeX));
+    {
+        const ImVec2 rowPos = ImGui::GetCursorScreenPos();
+        int m = Segmented("smode", kModes, 2, g_searchMode, kCtrlH);
+        if (m != g_searchMode) {
+            g_searchMode = m;
+            g_hits.clear();          // 别让上一种模式的结果留在列表里
+            if (g_searchBuf[0]) {
+                RunSearchNow(g_searchBuf);
+                g_mode = 2;
+            }
+        }
+        // Segmented 会把光标推到下一行，这里按宽度把它拉回来
+        ImGui::SetCursorScreenPos(ImVec2(rowPos.x + modeW + 8.0f, rowPos.y));
+    }
+
+    ImGui::SetNextItemWidth(searchW);
+    if (g_focusSearch) {
+        ImGui::SetKeyboardFocusHere();
+        g_focusSearch = false;
+    }
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(11, padY));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
+    ImGui::PushStyleColor(ImGuiCol_Border, g_ui.borderStrong);
+    const bool go = ImGui::InputTextWithHint("##search",
+                                             g_searchMode ? "搜索文件内容" : "搜索文件名",
+                                             g_searchBuf, sizeof g_searchBuf,
+                                             ImGuiInputTextFlags_EnterReturnsTrue);
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar(2);
+
+    bool doSearch = go;
+    ImGui::SameLine(0, 8);
+    if (GhostButton("搜索", ImVec2(searchBtnW, kCtrlH))) doSearch = true;
+    if (doSearch) {
+        RunSearchNow(g_searchBuf);
+        g_mode = g_searchBuf[0] ? 2 : 0;
+    }
+
+    ImGui::SameLine(std::max(ImGui::GetCursorPosX() + 12.0f, themeX));
+    const int themeIdx = Segmented("theme", kThemes, 2, g_darkTheme ? 1 : 0, kCtrlH, nullptr, true);
+    if ((themeIdx == 1) != g_darkTheme) SetTheme(themeIdx == 1);
 }
 
 static void DrawUI() {
@@ -2821,109 +3079,7 @@ static void DrawUI() {
 
     EnsureCurrentFiles();
 
-    // ---- 顶栏：logo / 位置 / 操作 / 主题切换
-    DrawLogo();
-    ImGui::SameLine(0, 14);
-
-    ImGui::SetNextItemWidth(112);
-    const char* driveLabel = (g_driveIdx >= 0 && g_driveIdx < (int)g_drives.size())
-                                 ? g_drives[g_driveIdx].c_str() : "选择磁盘...";
-    if (ImGui::BeginCombo("##drive", driveLabel)) {
-        for (int i = 0; i < (int)g_drives.size(); ++i) {
-            if (ImGui::Selectable(g_drives[i].c_str(), g_driveIdx == i)) {
-                g_driveIdx = i;
-                snprintf(g_pathBuf, sizeof g_pathBuf, "%s", g_drives[i].c_str());
-                g_rootPath = g_pathBuf;
-            }
-        }
-        ImGui::EndCombo();
-    }
-    ImGui::SameLine();
-
-    ImGui::SetNextItemWidth(280);
-    if (ImGui::InputText("##path", g_pathBuf, sizeof g_pathBuf)) g_rootPath = g_pathBuf;
-    ImGui::SameLine();
-
-    if (GhostButton("浏览…", ImVec2(62, 0))) {
-        std::string picked;
-        if (BrowseFolder(picked)) {
-            snprintf(g_pathBuf, sizeof g_pathBuf, "%s", picked.c_str());
-            g_rootPath = g_pathBuf;
-        }
-    }
-    ImGui::SameLine();
-
-    if (g_scanning.load()) {
-        if (GhostButton(g_paused.load() ? "继续" : "暂停", ImVec2(62, 0)))
-            g_paused = !g_paused.load();
-        ImGui::SameLine();
-        if (DangerButton(g_stopReq.load() ? "结束中" : "结束", ImVec2(56, 0))) g_stopReq = true;
-    } else {
-        if (PrimaryButton("扫描", ImVec2(64, 0))) StartScan(g_pathBuf);
-    }
-    ImGui::SameLine();
-    static const char* searchModeLabels[] = {"文件名", "内容"};
-    const ImVec2 modeRowPos = ImGui::GetCursorScreenPos();
-    const float modeW = SegmentedWidth(searchModeLabels, 2);
-
-    {
-        int m = Segmented("smode", searchModeLabels, 2, g_searchMode, 30.0f);
-        if (m != g_searchMode) {
-            g_searchMode = m;
-            g_hits.clear();          // 别让上一种模式的结果留在列表里
-            if (g_searchBuf[0]) {
-                RunSearchNow(g_searchBuf);
-                g_mode = 2;
-            }
-        }
-    }
-    // Segmented 内部结尾会 SetCursorScreenPos(p.x, p.y+height) + Dummy，
-    // 把光标推到下一行；这里用宽度自己算出位置，把它拉回同一行。
-    ImGui::SetCursorScreenPos(ImVec2(modeRowPos.x + modeW + 10.0f, modeRowPos.y));
-
-    // 搜索框跟在 文件名|内容 后面（左对齐），主题切换推到最右
-    {
-        // 宽度自适应：给右边的主题切换留位置，窄窗口也不会把搜索框挤到下一行
-        static const char* themeLabelsW[] = {"亮色", "暗色"};
-        const float toggleW = SegmentedWidth(themeLabelsW, 2);
-        const float btnW = 56.0f, gapW = 6.0f;
-        const float avail = ImGui::GetWindowContentRegionMax().x - ImGui::GetCursorPosX()
-                          - toggleW - btnW - gapW - 16.0f;
-        float w = 320.0f;
-        if (avail < w) w = avail;
-        if (w < 120.0f) w = 120.0f;
-        ImGui::SetNextItemWidth(w);
-    }
-    // Ctrl+F / 启动参数：把焦点给搜索框
-    if (g_focusSearch) {
-        ImGui::SetKeyboardFocusHere();
-        g_focusSearch = false;
-    }
-    // 高度和左边的按钮/分段控件对齐（30px）
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10, 5));
-    const bool go = ImGui::InputTextWithHint("##search",
-                                             g_searchMode ? "搜索文件内容…" : "搜索文件名…",
-                                             g_searchBuf, sizeof g_searchBuf,
-                                             ImGuiInputTextFlags_EnterReturnsTrue);
-    ImGui::PopStyleVar();
-
-    // 搜索按钮：不用非得按回车
-    bool doSearch = go;
-    ImGui::SameLine(0.0f, 6.0f);
-    if (GhostButton("搜索", ImVec2(56, 0))) doSearch = true;
-    if (doSearch) {
-        RunSearchNow(g_searchBuf);
-        g_mode = g_searchBuf[0] ? 2 : 0;
-    }
-
-    static const char* themeLabels[] = {"亮色", "暗色"};
-    const float toggleW = SegmentedWidth(themeLabels, 2);
-    const float rightEdge = ImGui::GetWindowContentRegionMax().x;
-    const float toggleX = rightEdge - toggleW;
-    if (toggleX > ImGui::GetCursorPosX() + 8.0f) ImGui::SameLine(toggleX);
-    else ImGui::SameLine();
-    const int themeIdx = Segmented("theme", themeLabels, 2, g_darkTheme ? 1 : 0, 30.0f);
-    if ((themeIdx == 1) != g_darkTheme) SetTheme(themeIdx == 1);
+    DrawTopBar();
 
     // ---- 筛选条：只在「内容模式 + 已有搜索结果」时出现在下面那块空位 ----
     if (g_searchMode == 1 && !g_searchQuery.empty()) {
@@ -2936,7 +3092,8 @@ static void DrawUI() {
             g_extListDirty = false;
         }
         if (!g_extList.empty()) {
-            const float rowX = 8.0f;
+            const float rowX = 20.0f;
+            const float rightEdge = ImGui::GetWindowContentRegionMax().x;
             ImGui::Dummy(ImVec2(0, 12));      // 上方留白
             ImGui::SetCursorPosX(rowX);
 
@@ -2997,35 +3154,51 @@ static void DrawUI() {
         }
     }
 
-    ImGui::Dummy(ImVec2(0, 2));
+    ImGui::Dummy(ImVec2(0, 4));
     DrawStatusStrip();
 
     // 面包屑行：无论是否下钻都占同一行，否则点进方块时整块界面会上下跳一格。
-    ImGui::Dummy(ImVec2(0, 2));
+    ImGui::Dummy(ImVec2(0, 4));
     {
         const bool canGo = g_current > 0 && !g_entries.empty() && !g_scanning.load();
         std::string crumb = canGo ? PathOf(g_current) : g_rootPath;
         if (crumb.size() > 74) crumb = "…" + crumb.substr(crumb.size() - 73);
+
         ImGui::PushFont(g_fontSmall, 0.0f);
-        ImGui::TextDisabled("%s", crumb.c_str());
+        ImGui::TextColored(g_ui.textFaint, "%s", crumb.c_str());
         ImGui::PopFont();
-        ImGui::SameLine(0, 10);
+
+        // 导航放右边：路径左对齐、操作右对齐，视线不用来回跳
+        const float linksW = ImGui::CalcTextSize("上一层").x + 8.0f + 10.0f +
+                             ImGui::CalcTextSize("回到根").x + 8.0f;
+        const float lx = ImGui::GetWindowContentRegionMax().x - linksW;
+        if (lx > ImGui::GetCursorPosX() + 12.0f) ImGui::SameLine(lx);
+        else ImGui::SameLine(0, 12);
+
         if (!canGo) ImGui::BeginDisabled();
-        if (GhostButton("↑ 上一层", ImVec2(0, 24))) {
+        if (TextLink("上一层")) {
             g_current = g_entries[g_current].parent;
             g_expandRestParent = -1;
         }
-        ImGui::SameLine(0, 6);
-        if (GhostButton("回到根", ImVec2(0, 24))) {
+        ImGui::SameLine(0, 10);
+        if (TextLink("回到根")) {
             g_current = 0;
             g_expandRestParent = -1;
         }
         if (!canGo) ImGui::EndDisabled();
     }
-    ImGui::Separator();
+    ImGui::Dummy(ImVec2(0, 3));
+    {
+        // 发丝线代替 ImGui::Separator()，别让整屏出现一条粗分割
+        ImVec2 sp = ImGui::GetCursorScreenPos();
+        float sw = ImGui::GetContentRegionAvail().x;
+        ImGui::GetWindowDrawList()->AddLine(ImVec2(sp.x, sp.y), ImVec2(sp.x + sw, sp.y),
+                                            ThemeColor(g_ui.border), 1.0f);
+        ImGui::Dummy(ImVec2(0, 1));
+    }
 
     float totalWidth = ImGui::GetContentRegionAvail().x;
-    float rightWidth = std::max(380.0f, totalWidth * 0.36f);
+    float rightWidth = std::max(360.0f, std::min(460.0f, totalWidth * 0.34f));
 
     ImGui::PushStyleColor(ImGuiCol_ChildBg, g_ui.windowBg);
     ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 12.0f);
