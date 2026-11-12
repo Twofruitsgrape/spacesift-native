@@ -14,7 +14,7 @@ from PIL import Image
 u = ctypes.windll.user32
 ROOT = os.path.dirname(os.path.abspath(__file__))
 EXE = os.environ.get("SPACESIFT_TEST_EXE") or os.path.join(ROOT, "build", "SpaceSift.exe")
-DIST = os.path.join(ROOT, "dist")
+DIST = os.environ.get("SPACESIFT_TEST_CWD") or os.path.join(ROOT, "dist")
 LD, LU, RD, RU = 0x0002, 0x0004, 0x0008, 0x0010
 DEFAULT_LOG = os.path.join(os.environ["LOCALAPPDATA"], "SpaceSift", "reveal.log")
 ROOT_DIR = r"E:\Projects\电脑文件全局检索"
