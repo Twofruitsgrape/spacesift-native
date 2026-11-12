@@ -38,3 +38,6 @@ dist/tessdata/
 # 打包产物
 build/pkg/
 packaging/licenses/GPL-3.0.txt
+
+# Python 缓存
+__pycache__/

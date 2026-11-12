@@ -25,6 +25,7 @@
 #include <dwmapi.h>
 #include <shlobj.h>
 #include <shellapi.h>
+#include <exdisp.h>
 
 #include "imgui.h"
 #include "imgui_impl_dx11.h"
@@ -420,7 +421,9 @@ static void SetTheme(bool dark) {
 //   2. 命令行参数解析依赖引号，路径带空格/中文时容易断
 // 改用 Shell 官方接口 SHOpenFolderAndSelectItems —— 它接受 PIDL，
 // 不经过命令行，路径怎么写都不会错。
-// 调试日志（SPACESIFT_DEBUG_LOG=路径 时才写）
+// 调试日志：SPACESIFT_DEBUG_LOG 指定路径时写那个文件；
+// 没指定也写一份到 %LOCALAPPDATA%\SpaceSift\reveal.log —— 「打开所在位置没反应」
+// 这种问题只能靠日志定位，不能让用户先去设环境变量。
 static void RvLog(const char* fmt, ...) {
     static FILE* f = nullptr;
     static bool inited = false;
@@ -430,6 +433,19 @@ static void RvLog(const char* fmt, ...) {
         if (p && *p) {
             std::wstring wp(p);
             f = _wfopen(wp.c_str(), L"a");
+        } else {
+            wchar_t base[MAX_PATH] = {0};
+            if (GetEnvironmentVariableW(L"LOCALAPPDATA", base, MAX_PATH) > 0) {
+                std::wstring dir = std::wstring(base) + L"\\SpaceSift";
+                CreateDirectoryW(dir.c_str(), nullptr);
+                std::wstring lp = dir + L"\\reveal.log";
+                // 超过 256 KB 就重开，免得越滚越大
+                WIN32_FILE_ATTRIBUTE_DATA fad = {};
+                if (GetFileAttributesExW(lp.c_str(), GetFileExInfoStandard, &fad) &&
+                    fad.nFileSizeLow > 256u * 1024u)
+                    _wremove(lp.c_str());
+                f = _wfopen(lp.c_str(), L"a");
+            }
         }
     }
     if (!f) return;
@@ -454,119 +470,367 @@ static bool SpawnExplorer(const std::wstring& args) {
                              0, nullptr, nullptr, &si, &pi);
     DWORD err = ok ? 0 : GetLastError();
     if (ok) { CloseHandle(pi.hProcess); CloseHandle(pi.hThread); }
-    RvLog("[reveal] SpawnExplorer ok=%d err=%lu args=%ls", (int)ok, (unsigned long)err, args.c_str());
+    RvLog("[reveal] SpawnExplorer ok=%d err=%lu args=%s", (int)ok, (unsigned long)err, WideToUtf8(args).c_str());
     return ok != 0;
+}
+
+// 以管理员身份运行时，本进程和资源管理器不在同一个完整性级别：
+// SHOpenFolderAndSelectItems 返回 0x80070005、ShellExecute 返回 5（拒绝访问），
+// 直接 CreateProcess 出来的 explorer.exe 又会因为「shell 已经在了」立刻退出。
+// 唯一稳的绕法：复制 explorer.exe 的令牌，用它降权起一个 explorer.exe。
+static bool SpawnExplorerWithShellToken(const std::wstring& args) {
+    HWND shell = GetShellWindow();
+    if (!shell) { RvLog("[reveal] shelltoken: 没有 shell 窗口"); return false; }
+    DWORD pid = 0;
+    GetWindowThreadProcessId(shell, &pid);
+    HANDLE proc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!proc) { RvLog("[reveal] shelltoken: OpenProcess err=%lu", (unsigned long)GetLastError()); return false; }
+
+    bool ok = false;
+    HANDLE tok = nullptr;
+    if (OpenProcessToken(proc, TOKEN_DUPLICATE | TOKEN_QUERY, &tok)) {
+        HANDLE dup = nullptr;
+        if (DuplicateTokenEx(tok, MAXIMUM_ALLOWED, nullptr, SecurityImpersonation,
+                             TokenPrimary, &dup)) {
+            wchar_t windir[MAX_PATH] = {0};
+            GetWindowsDirectoryW(windir, MAX_PATH);
+            std::wstring exe = std::wstring(windir) + L"\\explorer.exe";
+            std::wstring cmd = L"\"" + exe + L"\" " + args;
+            STARTUPINFOW si = {};
+            si.cb = sizeof(si);
+            si.wShowWindow = SW_SHOWNORMAL;
+            PROCESS_INFORMATION pi = {};
+            ok = CreateProcessWithTokenW(dup, LOGON_WITH_PROFILE, exe.c_str(), cmd.data(),
+                                         0, nullptr, nullptr, &si, &pi) != 0;
+            if (ok) { CloseHandle(pi.hProcess); CloseHandle(pi.hThread); }
+            else RvLog("[reveal] shelltoken: CreateProcessWithTokenW err=%lu", (unsigned long)GetLastError());
+            CloseHandle(dup);
+        } else RvLog("[reveal] shelltoken: DuplicateTokenEx err=%lu", (unsigned long)GetLastError());
+        CloseHandle(tok);
+    } else RvLog("[reveal] shelltoken: OpenProcessToken err=%lu", (unsigned long)GetLastError());
+    CloseHandle(proc);
+    RvLog("[reveal] SpawnExplorerWithShellToken ok=%d args=%s", (int)ok, WideToUtf8(args).c_str());
+    return ok;
+}
+
+// 路径规范化：折叠重复的反斜杠、正斜杠换反斜杠、去掉末尾分隔符。
+// 旧索引里存过 "c:\\program files" 这种双反斜杠写法，explorer 会直接跳到「此电脑」。
+static std::wstring NormalizePathW(const std::string& utf8) {
+    std::wstring in = Utf8ToWide(utf8);
+    while (!in.empty() && (in.back() == L' ' || in.back() == L'\t' || in.back() == L'\r' ||
+                           in.back() == L'\n'))
+        in.pop_back();
+    std::wstring out;
+    out.reserve(in.size());
+    size_t i = 0;
+    if (in.size() >= 2 && in[0] == L'\\' && in[1] == L'\\') {   // UNC：保留开头的 \\
+        out = L"\\\\";
+        i = 2;
+    }
+    for (; i < in.size(); ++i) {
+        wchar_t c = in[i];
+        if (c == L'/') c = L'\\';
+        if (c == L'\\' && !out.empty() && out.back() == L'\\') continue;
+        out.push_back(c);
+    }
+    if (out.size() > 3 && out.back() == L'\\') out.pop_back();
+    return out;
+}
+
+static std::string HexDword(DWORD v) {
+    char b[16];
+    snprintf(b, sizeof b, "0x%08lx", (unsigned long)v);
+    return b;
+}
+
+// ---- 资源管理器窗口：找到目录对应的窗口并拉到最前 ----
+// SHOpenFolderAndSelectItems 返回 S_OK 不代表用户看得见：窗口可能开在程序后面，
+// 用户看到的就是「点了没反应」。所以这里显式 SetForegroundWindow。
+
+struct ShellWinSnap {
+    HWND hwnd;
+    std::wstring url;
+};
+
+static std::wstring UrlToPathW(const std::wstring& url) {
+    std::wstring u = url;
+    if (u.rfind(L"file:///", 0) == 0) u = u.substr(8);
+    else if (u.rfind(L"file://", 0) == 0) u = u.substr(7);
+    std::string bytes;
+    for (size_t i = 0; i < u.size(); ++i) {
+        if (u[i] == L'%' && i + 2 < u.size()) {
+            auto hex = [](wchar_t c) -> int {
+                if (c >= L'0' && c <= L'9') return (int)(c - L'0');
+                if (c >= L'a' && c <= L'f') return (int)(c - L'a') + 10;
+                if (c >= L'A' && c <= L'F') return (int)(c - L'A') + 10;
+                return -1;
+            };
+            int h1 = hex(u[i + 1]), h2 = hex(u[i + 2]);
+            if (h1 >= 0 && h2 >= 0) {
+                bytes.push_back((char)(h1 * 16 + h2));
+                i += 2;
+                continue;
+            }
+        }
+        bytes += WideToUtf8(std::wstring(1, u[i]));
+    }
+    std::wstring p = Utf8ToWide(bytes);
+    std::replace(p.begin(), p.end(), L'/', L'\\');
+    return p;
+}
+
+static void SnapshotShellWindows(std::vector<ShellWinSnap>& out) {
+    out.clear();
+    IShellWindows* psw = nullptr;
+    if (FAILED(CoCreateInstance(CLSID_ShellWindows, nullptr, CLSCTX_ALL, IID_IShellWindows,
+                                (void**)&psw)) ||
+        !psw)
+        return;
+    long n = 0;
+    if (SUCCEEDED(psw->get_Count(&n))) {
+        for (long i = 0; i < n && i < 512; ++i) {
+            VARIANT v;
+            VariantInit(&v);
+            v.vt = VT_I4;
+            v.lVal = i;
+            IDispatch* pd = nullptr;
+            if (FAILED(psw->Item(v, &pd)) || !pd) continue;
+            IWebBrowser2* wb = nullptr;
+            if (SUCCEEDED(pd->QueryInterface(IID_IWebBrowser2, (void**)&wb)) && wb) {
+                SHANDLE_PTR h = 0;
+                if (SUCCEEDED(wb->get_HWND(&h)) && h) {
+                    ShellWinSnap s;
+                    s.hwnd = (HWND)h;
+                    BSTR url = nullptr;
+                    if (SUCCEEDED(wb->get_LocationURL(&url)) && url) {
+                        s.url = url;
+                        SysFreeString(url);
+                    }
+                    out.push_back(s);
+                }
+                wb->Release();
+            }
+            pd->Release();
+        }
+    }
+    psw->Release();
+}
+
+static bool SamePathW(const std::wstring& a, const std::wstring& b) {
+    std::wstring x = a, y = b;
+    if (x.size() > 3 && x.back() == L'\\') x.pop_back();
+    if (y.size() > 3 && y.back() == L'\\') y.pop_back();
+    return _wcsicmp(x.c_str(), y.c_str()) == 0;
+}
+
+// before 是调用前的窗口快照：URL 对不上时退而把「新出现的窗口」拉到最前。
+// 资源管理器需要几十毫秒才把新窗口注册到 IShellWindows，所以轮询几次。
+// tries 次、每次 60ms；找到窗口就立刻返回。
+static bool ActivateFolderWindow(const std::wstring& dir, const std::vector<HWND>& before,
+                                 int tries = 14) {
+    if (dir.empty()) return false;
+    std::wstring leaf = dir;
+    size_t slash = leaf.find_last_of(L'\\');
+    if (slash != std::wstring::npos && slash + 1 < leaf.size()) leaf = leaf.substr(slash + 1);
+
+    HWND target = nullptr;
+    for (int attempt = 0; attempt < tries && !target; ++attempt) {
+        if (attempt) Sleep(60);
+        std::vector<ShellWinSnap> list;
+        SnapshotShellWindows(list);
+
+        // 1) URL 对上目录
+        for (auto& s : list) {
+            if (!s.url.empty() && SamePathW(UrlToPathW(s.url), dir)) { target = s.hwnd; break; }
+        }
+        // 2) 标题等于目录名（特殊目录 / URL 编码异常的兜底）
+        if (!target && !leaf.empty()) {
+            for (auto& s : list) {
+                wchar_t title[MAX_PATH] = {0};
+                GetWindowTextW(s.hwnd, title, MAX_PATH);
+                if (title[0] && _wcsicmp(title, leaf.c_str()) == 0) { target = s.hwnd; break; }
+            }
+        }
+        // 3) 实在不行：把「调用前不存在的新窗口」拉出来
+        if (!target) {
+            for (auto& s : list) {
+                bool known = std::find(before.begin(), before.end(), s.hwnd) != before.end();
+                if (!known && IsWindowVisible(s.hwnd)) { target = s.hwnd; break; }
+            }
+        }
+        if (attempt == 0) {
+            RvLog("[reveal] activate: dir=%s shellwin=%d", WideToUtf8(dir).c_str(), (int)list.size());
+            for (size_t i = 0; i < list.size() && i < 6; ++i)
+                RvLog("[reveal]   win%02d hwnd=%p url=%s", (int)i, (void*)list[i].hwnd,
+                      WideToUtf8(list[i].url).c_str());
+        }
+    }
+    if (!target) {
+        RvLog("[reveal] activate: 没有对应窗口 dir=%s", WideToUtf8(dir).c_str());
+        return false;
+    }
+
+    if (IsIconic(target)) ShowWindow(target, SW_RESTORE);
+    SetWindowPos(target, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+    AllowSetForegroundWindow(GetWindowThreadProcessId(target, nullptr));
+    bool ok = SetForegroundWindow(target) != 0;
+    if (!ok) {
+        // 前台锁通常只放行「刚被用户操作过的进程」；不行就临时 AttachThreadInput
+        DWORD fgTid = GetWindowThreadProcessId(GetForegroundWindow(), nullptr);
+        DWORD myTid = GetCurrentThreadId();
+        AttachThreadInput(myTid, fgTid, TRUE);
+        ok = SetForegroundWindow(target) != 0;
+        AttachThreadInput(myTid, fgTid, FALSE);
+    }
+    RvLog("[reveal] activate %p ok=%d dir=%s", (void*)target, (int)ok, WideToUtf8(dir).c_str());
+    return ok;
+}
+
+static void ShellWindowsBefore(std::vector<HWND>& out) {
+    std::vector<ShellWinSnap> list;
+    SnapshotShellWindows(list);
+    for (auto& s : list) out.push_back(s.hwnd);
+}
+
+static std::wstring ParentDirW(const std::wstring& p) {
+    size_t slash = p.find_last_of(L'\\');
+    if (slash == std::wstring::npos || slash < 3) return std::wstring();
+    return p.substr(0, slash);
+}
+
+// 打开一个目录，并且确认用户真的看见了（窗口在前台）。
+// 关键：SHOpenFolderAndSelectItems 返回 S_OK 不代表窗口真的出来了 ——
+// Windows 上确实会出现「S_OK 但什么也没打开」，所以每级都要验证，
+// 验证失败就继续往下走。
+//   1) SHOpenFolderAndSelectItems          走 shell 命名空间
+//   2) ShellExecuteW(open)                 走 shell 关联
+//   2b) ShellExecuteW(explore)             换动词，绕开被改坏的 open 关联
+//   3) CreateProcessW(explorer.exe "dir" ) 不和运行中的 explorer 握手
+//   4) 用 explorer 令牌降权起 explorer      管理员模式下唯一能过 UIPI 的路
+static bool OpenFolderW(const std::wstring& dir, const std::vector<HWND>& before,
+                        std::string* diag) {
+    char buf[192];
+
+    PIDLIST_ABSOLUTE pidl = ILCreateFromPathW(dir.c_str());
+    if (pidl) {
+        HRESULT hr = SHOpenFolderAndSelectItems(pidl, 0, nullptr, 0);
+        ILFree(pidl);
+        snprintf(buf, sizeof buf, "shell=%s ", HexDword((DWORD)hr).c_str());
+        if (diag) *diag += buf;
+        RvLog("[reveal] openFolder #1 %s", buf);
+        if (SUCCEEDED(hr) && ActivateFolderWindow(dir, before)) return true;
+        if (SUCCEEDED(hr)) RvLog("[reveal] openFolder #1 S_OK 但没有窗口，继续兜底");
+    } else {
+        if (diag) *diag += "pidl=null ";
+        RvLog("[reveal] openFolder #1 pidl=null err=%lu", (unsigned long)GetLastError());
+    }
+
+    INT_PTR r = (INT_PTR)ShellExecuteW(nullptr, L"open", dir.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    snprintf(buf, sizeof buf, "SE=%ld ", (long)r);
+    if (diag) *diag += buf;
+    RvLog("[reveal] openFolder #2 %s", buf);
+    if (r > 32 && ActivateFolderWindow(dir, before)) return true;
+
+    r = (INT_PTR)ShellExecuteW(nullptr, L"explore", dir.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    snprintf(buf, sizeof buf, "EX=%ld ", (long)r);
+    if (diag) *diag += buf;
+    RvLog("[reveal] openFolder #2b %s", buf);
+    if (r > 32 && ActivateFolderWindow(dir, before)) return true;
+
+    if (SpawnExplorer(L"\"" + dir + L"\"") && ActivateFolderWindow(dir, before, 30)) return true;
+    if (SpawnExplorerWithShellToken(L"\"" + dir + L"\"") &&
+        ActivateFolderWindow(dir, before, 30))
+        return true;
+    if (diag) *diag += "CP/TOK=0 ";
+    return false;
+}
+
+// 在资源管理器里选中一个文件，并确认用户看得见。
+// 同样：SHOpenFolderAndSelectItems 可能返回 S_OK 但窗口没出来/没选中。
+static bool SelectFileW(const std::wstring& file, const std::wstring& parent,
+                        const std::vector<HWND>& before, std::string* diag) {
+    PIDLIST_ABSOLUTE pidl = ILCreateFromPathW(file.c_str());
+    if (pidl) {
+        HRESULT hr = SHOpenFolderAndSelectItems(pidl, 0, nullptr, 0);
+        ILFree(pidl);
+        RvLog("[reveal] SHOpenFolderAndSelectItems hr=0x%08lx", (unsigned long)hr);
+        if (diag) *diag += "shell=" + HexDword((DWORD)hr) + " ";
+        if (SUCCEEDED(hr) && ActivateFolderWindow(parent, before)) return true;
+        if (SUCCEEDED(hr)) RvLog("[reveal] 选中文件 S_OK 但没有窗口，继续兜底");
+    } else {
+        RvLog("[reveal] file ILCreateFromPath failed err=%lu", (unsigned long)GetLastError());
+        if (diag) *diag += "pidl=null ";
+    }
+
+    // 1b) 不握手：直接起 explorer.exe /select
+    std::wstring sel = L"/select,\"" + file + L"\"";
+    if (IsUserAnAdmin() && SpawnExplorerWithShellToken(sel) &&
+        ActivateFolderWindow(parent, before, 30))
+        return true;
+    if (SpawnExplorer(sel) && ActivateFolderWindow(parent, before, 30)) return true;
+    if (SpawnExplorerWithShellToken(sel) && ActivateFolderWindow(parent, before, 30)) return true;
+    return false;
 }
 
 static void RevealInExplorer(const std::string& path) {
     if (path.empty()) { g_lastCleanMsg = "路径为空"; return; }
-    std::wstring w = Utf8ToWide(path);
+    const std::wstring w = NormalizePathW(path);
+    if (w.empty()) { g_lastCleanMsg = "路径为空"; return; }
 
     DWORD attr = GetFileAttributesW(w.c_str());
-    RvLog("[reveal] path=%s", path.c_str());
-    RvLog("[reveal] attr=0x%lx err=%lu", (unsigned long)attr, GetLastError());
+    const bool exists = attr != INVALID_FILE_ATTRIBUTES;
+    const bool isDir = exists && (attr & FILE_ATTRIBUTE_DIRECTORY) != 0;
+    const bool admin = IsUserAnAdmin() != 0;
+    RvLog("[reveal] path=%s size=%d attr=0x%lx exists=%d dir=%d admin=%d", WideToUtf8(w).c_str(),
+          (int)w.size(), (unsigned long)attr, (int)exists, (int)isDir, (int)admin);
 
     AllowSetForegroundWindow(ASFW_ANY);
 
-    // 打开一个文件夹。三级兜底，每级都记下错误码：
-    //   1) SHOpenFolderAndSelectItems(folder_pidl)  走 shell 命名空间
-    //   2) ShellExecuteW(nullptr, L"open", dir)     走 shell 关联
-    //   3) CreateProcessW(explorer.exe "dir")       直接起进程，绕开 shell 通信
-    // 前两级都要和「正在运行的 explorer」握手；握手被拦（权限/安全软件/关联被改）时
-    // 只有第三级还能用。反过来，第三级在某些机器上会 0xc0000142，所以放在最后。
-    // 禁用：ShellExecute("explorer.exe","/select,...")（会崩）和
-    //       ShellExecuteEx(SEE_MASK_INVOKEIDLIST)（UI 线程死锁）。
-    auto openFolder = [](const std::wstring& dir, std::string* diag) -> bool {
-        char buf[192];
-        std::string d;
+    std::vector<HWND> before;
+    ShellWindowsBefore(before);
 
-        PIDLIST_ABSOLUTE pidl = ILCreateFromPathW(dir.c_str());
-        if (pidl) {
-            HRESULT hr = SHOpenFolderAndSelectItems(pidl, 0, nullptr, 0);
-            ILFree(pidl);
-            snprintf(buf, sizeof buf, "shell=0x%08lx", (unsigned long)hr);
-            if (SUCCEEDED(hr)) { RvLog("[reveal] openFolder #1 ok"); return true; }
-        } else {
-            snprintf(buf, sizeof buf, "pidl=null");
-        }
-        d += buf;
-        RvLog("[reveal] openFolder #1 failed: %s", buf);
-
-        INT_PTR r = (INT_PTR)ShellExecuteW(nullptr, L"open", dir.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-        snprintf(buf, sizeof buf, " SE=%ld", (long)r);
-        d += buf;
-        RvLog("[reveal] openFolder #2 %s", buf);
-        if (r > 32) return true;
-
-        // #2b 换 explore 动词：某些机器上 Directory 的 open 关联被改坏了，explore 还能用
-        INT_PTR r2 = (INT_PTR)ShellExecuteW(nullptr, L"explore", dir.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-        snprintf(buf, sizeof buf, " EX=%ld", (long)r2);
-        d += buf;
-        RvLog("[reveal] openFolder #2b %s", buf);
-        if (r2 > 32) return true;
-
-        // 第三级：直接把 explorer.exe 拉起来。用 CreateProcessW 而不是 ShellExecute，
-        // 避免继承任何 shell 关联/兼容层设置。
-        BOOL ok = SpawnExplorer(L"\"" + dir + L"\"");
-        DWORD err = ok ? 0 : GetLastError();
-        snprintf(buf, sizeof buf, " CP=%d/%lu", (int)ok, (unsigned long)err);
-        d += buf;
-        RvLog("[reveal] openFolder #3 %s", buf);
-
-        if (diag) *diag = d;
-        return ok != 0;
-    };
+    const std::wstring parent = isDir ? w : ParentDirW(w);
 
     // ---- 1) 文件存在：在资源管理器里选中它 ----
-    if (attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY)) {
-        PIDLIST_ABSOLUTE pidl = ILCreateFromPathW(w.c_str());
-        if (pidl) {
-            HRESULT hr = SHOpenFolderAndSelectItems(pidl, 0, nullptr, 0);
-            ILFree(pidl);
-            RvLog("[reveal] SHOpenFolderAndSelectItems hr=0x%08lx", (unsigned long)hr);
-            if (SUCCEEDED(hr)) { g_lastCleanMsg = "已在资源管理器中定位"; return; }
-        } else {
-            RvLog("[reveal] file ILCreateFromPath failed err=%lu", GetLastError());
-        }
-
-        // 1b) 直接起 explorer.exe /select —— 不需要和运行中的 explorer 握手。
-        //     shell 命名空间定位失败时（subst/网络盘、关联被改、UIPI）仍可能成功。
-        if (SpawnExplorer(L"/select,\"" + w + L"\"")) {
+    if (exists && !isDir) {
+        std::string diag;
+        if (SelectFileW(w, parent, before, &diag)) {
             g_lastCleanMsg = "已在资源管理器中定位";
             return;
         }
+        // 选不中就至少打开所在目录
+        std::string d2;
+        if (!parent.empty() && OpenFolderW(parent, before, &d2)) {
+            g_lastCleanMsg = std::string("已打开所在目录（未能选中文件：") + diag + "）" +
+                             (admin ? " 管理员模式" : "");
+            return;
+        }
+        g_lastCleanMsg = std::string("打开资源管理器失败(") + diag + d2 + ")" +
+                         (admin ? " 管理员模式" : "");
+        return;
     }
 
     // ---- 2) 本身就是目录 ----
-    if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY)) {
+    if (exists && isDir) {
         std::string diag;
-        if (openFolder(w, &diag)) {
+        if (OpenFolderW(w, before, &diag)) {
             g_lastCleanMsg = "已打开目录";
         } else {
-            g_lastCleanMsg = std::string("打开目录失败(") + diag + ")" +
-                             (IsUserAnAdmin() ? " 管理员模式" : "");
-            RvLog("[reveal] all failed for dir: %s", diag.c_str());
+            g_lastCleanMsg = std::string("打开目录失败(") + diag + ")" + (admin ? " 管理员模式" : "");
         }
         return;
     }
 
-    // ---- 3) 文件不在了 / 定位失败：打开所在目录 ----
-    size_t slash = w.find_last_of(L'\\');
-    if (slash != std::wstring::npos && slash > 2) {
-        std::wstring parent = w.substr(0, slash);
-        if (GetFileAttributesW(parent.c_str()) != INVALID_FILE_ATTRIBUTES) {
-            std::string diag;
-            if (openFolder(parent, &diag)) {
-                g_lastCleanMsg = (attr == INVALID_FILE_ATTRIBUTES)
-                                     ? "文件已不存在，已打开所在目录"
-                                     : "已打开所在目录（未能选中文件）";
-            } else {
-                g_lastCleanMsg = std::string("打开资源管理器失败(") + diag + ")" +
-                                 (IsUserAnAdmin() ? " 管理员模式" : "");
-                RvLog("[reveal] all failed for parent: %s", diag.c_str());
-            }
-            return;
+    // ---- 3) 文件不在了：打开它所在的目录 ----
+    if (!parent.empty() && GetFileAttributesW(parent.c_str()) != INVALID_FILE_ATTRIBUTES) {
+        std::string diag;
+        if (OpenFolderW(parent, before, &diag)) {
+            g_lastCleanMsg = "文件已不存在，已打开所在目录";
+        } else {
+            g_lastCleanMsg = std::string("打开资源管理器失败(") + diag + ")" +
+                             (admin ? " 管理员模式" : "");
         }
+        return;
     }
 
     g_lastCleanMsg = "找不到该文件，所在目录也不存在";

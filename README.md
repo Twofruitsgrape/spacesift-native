@@ -44,6 +44,31 @@ Get-FileHash .\SpaceSift-2.0.5-portable.zip -Algorithm SHA256
 - **安全边界** — 只处理扫描范围内的路径，系统受保护目录一律跳过
 - 明暗主题切换、右键菜单（打开所在位置 / 复制路径 / 从此处扫描）
 
+## 「打开所在位置」点下去没反应？
+
+这一版把这条链做成了**逐级验证**，不再相信 `SHOpenFolderAndSelectItems` 返回的 `S_OK`
+（Windows 上确实会出现「返回成功但窗口没出来」，本项目实测复现过）：
+
+| 级别 | 做法 | 需要和 explorer 握手 |
+|---|---|---|
+| 1 | `SHOpenFolderAndSelectItems` | 是 |
+| 2 | `ShellExecuteW("open")` / `("explore")` | 是 |
+| 3 | `CreateProcessW(explorer.exe "目录")` | 否 |
+| 4 | 用 explorer 的令牌降权起 explorer（管理员模式下唯一能过 UIPI 的路） | 否 |
+
+每级成功后都会**把资源管理器窗口拉到前台**（`IShellWindows` 找到目录对应的窗口 →
+`SetForegroundWindow`），所以即使窗口开在程序后面也能看见。
+
+万一还是没打开，看日志（不设环境变量也会写）：
+
+```
+%LOCALAPPDATA%\SpaceSift\reveal.log
+```
+
+`%LOCALAPPDATA%` = `C:\Users\<你的用户名>\AppData\Local`。日志里每一行带 `shell=` `SE=`
+`EX=` `activate ... ok=` 的错误码，最后一行就是卡在哪一级。
+
+
 ## 内容检索支持哪些格式
 
 | 类别 | 格式 |
