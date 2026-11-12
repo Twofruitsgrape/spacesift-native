@@ -451,26 +451,60 @@ static void RevealInExplorer(const std::string& path) {
 
     AllowSetForegroundWindow(ASFW_ANY);
 
-    // 打开一个文件夹。只用实测安全的两种方式：
-    //   1) SHOpenFolderAndSelectItems(folder_pidl) —— 走 shell，同步返回，约 0.9s
-    //   2) ShellExecuteW(nullptr, L"open", dir)  —— 47ms
-    // 明确禁用两种（都实测踩过坑）：
-    //   x ShellExecute("explorer.exe", "/select,...")  → 新起 explorer.exe 进程，
-    //     部分机器直接 0xc0000142 弹「应用程序错误」
-    //   x ShellExecuteEx(SEE_MASK_INVOKEIDLIST)        → 在 UI 线程上死锁，界面卡住
-    auto openFolder = [](const std::wstring& dir) -> bool {
+    // 打开一个文件夹。三级兜底，每级都记下错误码：
+    //   1) SHOpenFolderAndSelectItems(folder_pidl)  走 shell 命名空间
+    //   2) ShellExecuteW(nullptr, L"open", dir)     走 shell 关联
+    //   3) CreateProcessW(explorer.exe "dir")       直接起进程，绕开 shell 通信
+    // 前两级都要和「正在运行的 explorer」握手；握手被拦（权限/安全软件/关联被改）时
+    // 只有第三级还能用。反过来，第三级在某些机器上会 0xc0000142，所以放在最后。
+    // 禁用：ShellExecute("explorer.exe","/select,...")（会崩）和
+    //       ShellExecuteEx(SEE_MASK_INVOKEIDLIST)（UI 线程死锁）。
+    auto openFolder = [](const std::wstring& dir, std::string* diag) -> bool {
+        char buf[192];
+        std::string d;
+
         PIDLIST_ABSOLUTE pidl = ILCreateFromPathW(dir.c_str());
         if (pidl) {
             HRESULT hr = SHOpenFolderAndSelectItems(pidl, 0, nullptr, 0);
             ILFree(pidl);
-            RvLog("[reveal] openFolder(SHOpenFolder) hr=0x%08lx", (unsigned long)hr);
-            if (SUCCEEDED(hr)) return true;
+            snprintf(buf, sizeof buf, "shell=0x%08lx", (unsigned long)hr);
+            if (SUCCEEDED(hr)) { RvLog("[reveal] openFolder #1 ok"); return true; }
         } else {
-            RvLog("[reveal] openFolder ILCreateFromPath failed");
+            snprintf(buf, sizeof buf, "pidl=null");
         }
+        d += buf;
+        RvLog("[reveal] openFolder #1 failed: %s", buf);
+
         INT_PTR r = (INT_PTR)ShellExecuteW(nullptr, L"open", dir.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-        RvLog("[reveal] openFolder(ShellExecute) ret=%ld", (long)r);
-        return r > 32;
+        snprintf(buf, sizeof buf, " SE=%ld", (long)r);
+        d += buf;
+        RvLog("[reveal] openFolder #2 %s", buf);
+        if (r > 32) return true;
+
+        // #2b 换 explore 动词：某些机器上 Directory 的 open 关联被改坏了，explore 还能用
+        INT_PTR r2 = (INT_PTR)ShellExecuteW(nullptr, L"explore", dir.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        snprintf(buf, sizeof buf, " EX=%ld", (long)r2);
+        d += buf;
+        RvLog("[reveal] openFolder #2b %s", buf);
+        if (r2 > 32) return true;
+
+        // 第三级：直接把 explorer.exe 拉起来。用 CreateProcessW 而不是 ShellExecute，
+        // 避免继承任何 shell 关联/兼容层设置。
+        std::wstring exe = L"explorer.exe";
+        std::wstring cmd = exe + L" \"" + dir + L"\"";
+        STARTUPINFOW si = {};
+        si.cb = sizeof(si);
+        PROCESS_INFORMATION pi = {};
+        BOOL ok = CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE,
+                                 0, nullptr, nullptr, &si, &pi);
+        DWORD err = ok ? 0 : GetLastError();
+        if (ok) { CloseHandle(pi.hProcess); CloseHandle(pi.hThread); }
+        snprintf(buf, sizeof buf, " CP=%d/%lu", (int)ok, (unsigned long)err);
+        d += buf;
+        RvLog("[reveal] openFolder #3 %s", buf);
+
+        if (diag) *diag = d;
+        return ok != 0;
     };
 
     // ---- 1) 文件存在：在资源管理器里选中它 ----
@@ -488,7 +522,14 @@ static void RevealInExplorer(const std::string& path) {
 
     // ---- 2) 本身就是目录 ----
     if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY)) {
-        g_lastCleanMsg = openFolder(w) ? "已打开目录" : "打开目录失败";
+        std::string diag;
+        if (openFolder(w, &diag)) {
+            g_lastCleanMsg = "已打开目录";
+        } else {
+            g_lastCleanMsg = std::string("打开目录失败(") + diag + ")" +
+                             (IsUserAnAdmin() ? " 管理员模式" : "");
+            RvLog("[reveal] all failed for dir: %s", diag.c_str());
+        }
         return;
     }
 
@@ -497,12 +538,15 @@ static void RevealInExplorer(const std::string& path) {
     if (slash != std::wstring::npos && slash > 2) {
         std::wstring parent = w.substr(0, slash);
         if (GetFileAttributesW(parent.c_str()) != INVALID_FILE_ATTRIBUTES) {
-            if (openFolder(parent)) {
+            std::string diag;
+            if (openFolder(parent, &diag)) {
                 g_lastCleanMsg = (attr == INVALID_FILE_ATTRIBUTES)
                                      ? "文件已不存在，已打开所在目录"
                                      : "已打开所在目录（未能选中文件）";
             } else {
-                g_lastCleanMsg = "打开资源管理器失败";
+                g_lastCleanMsg = std::string("打开资源管理器失败(") + diag + ")" +
+                                 (IsUserAnAdmin() ? " 管理员模式" : "");
+                RvLog("[reveal] all failed for parent: %s", diag.c_str());
             }
             return;
         }
