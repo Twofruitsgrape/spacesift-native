@@ -25,7 +25,9 @@
 |---|---|---|
 | 文本/代码 | 60+ 后缀（txt/md/csv/log/json/xml/yml/ini/html/css + c/cpp/py/js/ts/rs/go/java…） | 直读 + 编码探测（UTF-8/GBK/UTF-16） |
 | Office | docx / docm / xlsx / xlsm / pptx / pptm / odt / ods / odp | 直读 OOXML |
-| 旧版 Office | **doc / ppt / xls** | UTF-16LE 扫描（零依赖）；有 catdoc/LibreOffice 时优先用 |
+| 旧版 Office | **doc / ppt / xls** | 中文走 UTF-16LE 扫描（零依赖）；**英文需 catdoc/LibreOffice** |
+| 电子书 | **epub** | zip + XHTML |
+| 邮件 | **eml / msg** | MIME 解码（base64/QP）/ UTF-16 扫描 |
 | PDF | 文本层 | pdfium |
 | PDF 扫描件 | 无文本层的页 | pdfium 渲染 → Tesseract（需勾选 OCR） |
 | 图片 | png / jpg / bmp / tif | Tesseract（需勾选 OCR） |
@@ -34,7 +36,7 @@
 | SolidWorks | **sldprt / sldasm / slddrw** | openswx（自定义属性、配置名、装配体零件引用、焊接清单、图纸页） |
 | COMSOL | **mph** | 流式 zip → smodel.json（模型树 label）+ dmodel.xml（参数/变量/物理场） |
 | CAE 文本 | **inp / cdb / anf / wbpj / dat / msg / sta** | 纯文本 |
-| 压缩包 | **zip**（条目名 + 内层文本）、**rar** / **7z**（条目名） | miniz / UnRAR / 7-Zip |
+| 压缩包 | **zip / rar / 7z**（条目名 + 内层文本文件，每个包最多 20 条 / 2 MB） | miniz / UnRAR / 7-Zip |
 
 **读不了的**（私有二进制，必须装对应软件）：
 `.cae` `.odb`（Abaqus）、`.db` `.rst`（ANSYS）。

@@ -296,6 +296,21 @@ int main() {
         Check(ok, "size:>50 过滤生效");
     }
 
+    // 正则
+    {
+        auto hits = content::Search(dirU8, "re:关键词[甲乙]", 50);
+        bool hasA = false, hasB = false;
+        for (auto& h : hits) {
+            if (Contains(h.path, "utf8.txt")) hasA = true;
+            if (Contains(h.path, "gbk.txt")) hasB = true;
+        }
+        Check(hasA && hasB, "re: 正则能同时命中两个文件");
+    }
+    {
+        auto hits = content::Search(dirU8, "/加热针/", 50);
+        Check(!hits.empty(), "/.../ 也能当正则用");
+    }
+
     // 相关度排序：命中次数多的在前
     {
         auto hits = content::Search(dirU8, "关键词壬", 10);

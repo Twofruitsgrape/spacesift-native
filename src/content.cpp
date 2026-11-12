@@ -6,6 +6,7 @@
 #include <cctype>
 #include <functional>
 #include <mutex>
+#include <regex>
 #include <vector>
 
 #include "extract.h"
@@ -781,9 +782,82 @@ std::string BuildMatch(const ParsedQuery& p) {
     return m;
 }
 
+// 给 SQLite 注册 regexp(pattern, text)，这样能用 WHERE text REGEXP ?
+void RegexpFunc(sqlite3_context* ctx, int argc, sqlite3_value** argv) {
+    if (argc != 2) { sqlite3_result_int(ctx, 0); return; }
+    const char* pat = (const char*)sqlite3_value_text(argv[0]);
+    const char* txt = (const char*)sqlite3_value_text(argv[1]);
+    if (!pat || !txt) { sqlite3_result_int(ctx, 0); return; }
+    try {
+        const std::regex re(pat, std::regex::ECMAScript | std::regex::optimize);
+        sqlite3_result_int(ctx, std::regex_search(txt, re) ? 1 : 0);
+    } catch (...) {
+        sqlite3_result_int(ctx, 0);   // 正则写错就当没命中，不崩
+    }
+}
+
+// 正则模式：re:xxx 或 /xxx/
+bool IsRegexQuery(const std::string& q, std::string& pattern) {
+    if (q.size() > 3 && (q.compare(0, 3, "re:") == 0 || q.compare(0, 3, "RE:") == 0)) {
+        pattern = q.substr(3);
+        return !pattern.empty();
+    }
+    if (q.size() > 2 && q.front() == '/' && q.back() == '/') {
+        pattern = q.substr(1, q.size() - 2);
+        return !pattern.empty();
+    }
+    return false;
+}
+
 std::vector<db::Hit> Search(const std::string& root, const std::string& query, int limit) {
     std::vector<db::Hit> out;
     if (query.empty() || !HasIndex(root)) return out;
+
+    // ---- 正则模式：全表扫描（显式写 re: 才走这条路，慢是用户预期内的）
+    std::string rePat;
+    if (IsRegexQuery(query, rePat)) {
+        const std::string dbPath = DbPathFor(root);
+        sqlite3* db = nullptr;
+        if (sqlite3_open_v2(dbPath.c_str(), &db, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK) {
+            if (db) sqlite3_close(db);
+            return out;
+        }
+        sqlite3_create_function(db, "regexp", 2, SQLITE_UTF8, nullptr, RegexpFunc, nullptr, nullptr);
+        sqlite3_exec(db, "PRAGMA cache_size=-32768;", nullptr, nullptr, nullptr);
+
+        std::regex re;
+        try { re = std::regex(rePat, std::regex::ECMAScript | std::regex::optimize); }
+        catch (...) { sqlite3_close(db); return out; }
+
+        sqlite3_stmt* st = nullptr;
+        if (sqlite3_prepare_v2(db,
+                "SELECT path,name,size,substr(text,1,600) FROM docs WHERE text REGEXP ?1 "
+                "ORDER BY mtime DESC LIMIT ?2", -1, &st, nullptr) == SQLITE_OK) {
+            sqlite3_bind_text(st, 1, rePat.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int(st, 2, limit);
+            while (sqlite3_step(st) == SQLITE_ROW) {
+                db::Hit h;
+                const unsigned char* p0 = sqlite3_column_text(st, 0);
+                const unsigned char* p1 = sqlite3_column_text(st, 1);
+                const unsigned char* p3 = sqlite3_column_text(st, 3);
+                h.path = p0 ? (const char*)p0 : "";
+                h.name = p1 ? (const char*)p1 : "";
+                h.size = (uint64_t)sqlite3_column_int64(st, 2);
+                const std::string head = p3 ? (const char*)p3 : "";
+                // 片段尽量落在命中位置附近
+                std::smatch m;
+                std::string snip = head;
+                if (std::regex_search(head, m, re) && m.position(0) > 40)
+                    snip = head.substr((size_t)m.position(0) - 40);
+                h.snippet = Flatten(snip, 90);
+                h.content = true;
+                out.push_back(std::move(h));
+            }
+            sqlite3_finalize(st);
+        }
+        sqlite3_close(db);
+        return out;
+    }
 
     const ParsedQuery pq = ParseQuery(query);
     if (pq.Empty()) return out;

@@ -1369,35 +1369,181 @@ std::string ArchiveText(const std::string& path) {
 
     std::string out;
     DWORD code = 1;
+    std::vector<std::string> names;
+
     if (kind == L"7z") {
         if (!external::RunCapture(exe, L"l -ba -slt -- \"" + ToWide(path) + L"\"", out,
                                   kStoreCap, 60000, &code) ||
             code != 0)
             return {};
-        std::string names;
         size_t pos = 0;
         while (pos < out.size()) {
             size_t nl = out.find('\n', pos);
             if (nl == std::string::npos) nl = out.size();
-            const std::string line = out.substr(pos, nl - pos);
-            if (line.compare(0, 7, "Path = ") == 0) Append(names, line.substr(7));
+            std::string line = out.substr(pos, nl - pos);
+            if (!line.empty() && line.back() == '\r') line.pop_back();   // 7z 输出是 CRLF
+            if (line.compare(0, 7, "Path = ") == 0) names.push_back(line.substr(7));
             pos = nl + 1;
         }
-        return names;
+    } else {
+        // UnRAR lb：一行一个文件名
+        if (!external::RunCapture(exe, L"lb \"" + ToWide(path) + L"\"", out, kStoreCap, 60000, &code) ||
+            code != 0)
+            return {};
+        size_t pos = 0;
+        while (pos < out.size()) {
+            size_t nl = out.find('\n', pos);
+            if (nl == std::string::npos) nl = out.size();
+            std::string one = out.substr(pos, nl - pos);
+            if (!one.empty() && one.back() == '\r') one.pop_back();
+            if (!one.empty()) names.push_back(one);
+            pos = nl + 1;
+        }
     }
-    // UnRAR lb：一行一个文件名
-    if (!external::RunCapture(exe, L"lb \"" + ToWide(path) + L"\"", out, kStoreCap, 60000, &code) ||
-        code != 0)
-        return {};
-    std::string names;
-    size_t pos = 0;
-    while (pos < out.size()) {
-        size_t nl = out.find('\n', pos);
-        if (nl == std::string::npos) nl = out.size();
-        Append(names, out.substr(pos, nl - pos));
-        pos = nl + 1;
+
+    // 条目名本身可搜
+    std::string result;
+    for (const auto& n : names) Append(result, n);
+    const bool dbg = std::getenv("SPACESIFT_DEBUG_ARCH") != nullptr;
+    if (dbg) fprintf(stderr, "[arch] kind=%ls names=%zu\n", kind.c_str(), names.size());
+
+    // 再抽内层文本：逐条调一次解压进程，太贵，所以限量
+    // （20 条 / 2 MB 封顶；命中率最高的是 txt/md/csv/代码/日志）
+    int extracted = 0;
+    size_t budget = 2u * 1024 * 1024;
+    for (const auto& n : names) {
+        if (extracted >= 20 || budget == 0 || result.size() >= kStoreCap) break;
+        const std::string e = LowerExt(n);
+        const bool textish = IsTextExt(e) || e == ".dxf" || e == ".step" || e == ".stp" ||
+                             e == ".obj" || e == ".csv" || e == ".log";
+        if (!textish) continue;
+
+        std::string body;
+        DWORD c2 = 1;
+        const std::wstring src = ToWide(path);
+        const std::wstring entry = ToWide(n);
+        const std::wstring args = (kind == L"7z")
+            ? (L"x -so -- \"" + src + L"\" \"" + entry + L"\"")
+            : (L"p -inul \"" + src + L"\" \"" + entry + L"\"");
+        const bool ran = external::RunCapture(exe, args, body, budget, 30000, &c2);
+        if (dbg) fprintf(stderr, "[arch] entry=%s textish=%d ran=%d code=%lu size=%zu\n", n.c_str(), (int)textish, (int)ran, (unsigned long)c2, body.size());
+        if (!ran || c2 != 0) continue;
+        ++extracted;
+        if (body.size() > budget) body.resize(budget);
+        budget -= body.size();
+        Append(result, Decode(body));
     }
-    return names;
+    return result;
+}
+
+// ======================= EPUB / EML =======================
+
+// .epub 就是 zip + xhtml，和 OOXML 同一套路
+std::string EpubText(const std::string& path) {
+    ZipReader z;
+    if (!z.Open(path)) return {};
+    std::string out;
+    const int n = z.Count();
+    for (int i = 0; i < n && out.size() < kStoreCap; ++i) {
+        if (z.IsDir(i)) continue;
+        std::string name;
+        if (!z.Name(i, name)) continue;
+        const std::string e = LowerExt(name);
+        if (e != ".xhtml" && e != ".html" && e != ".htm" && e != ".opf" && e != ".ncx") continue;
+        if (z.Size(i) > 8ull * 1024 * 1024) continue;
+        std::string body;
+        if (!z.Extract(i, body, 8u * 1024 * 1024)) continue;
+        CollectXmlText(body, out, kStoreCap);
+    }
+    return out;
+}
+
+// =XX 形式的 quoted-printable
+std::string DecodeQuotedPrintable(const std::string& s) {
+    std::string o;
+    o.reserve(s.size());
+    for (size_t i = 0; i < s.size(); ++i) {
+        if (s[i] == '=' && i + 2 < s.size() && isxdigit((unsigned char)s[i + 1]) &&
+            isxdigit((unsigned char)s[i + 2])) {
+            o.push_back((char)strtoul(s.substr(i + 1, 2).c_str(), nullptr, 16));
+            i += 2;
+        } else if (s[i] == '=' && i + 1 < s.size() && (s[i + 1] == '\r' || s[i + 1] == '\n')) {
+            // 软换行，丢掉
+        } else {
+            o.push_back(s[i]);
+        }
+    }
+    return o;
+}
+
+int B64Val(char c) {
+    if (c >= 'A' && c <= 'Z') return c - 'A';
+    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+    if (c >= '0' && c <= '9') return c - '0' + 52;
+    if (c == '+') return 62;
+    if (c == '/') return 63;
+    return -1;
+}
+
+std::string DecodeBase64(const std::string& s) {
+    std::string o;
+    int buf = 0, bits = 0;
+    for (char c : s) {
+        const int v = B64Val(c);
+        if (v < 0) continue;
+        buf = (buf << 6) | v;
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            o.push_back((char)((buf >> bits) & 0xFF));
+        }
+    }
+    return o;
+}
+
+// .eml：MIME 文本。base64 / quoted-printable 都解一下，附件类长行丢掉
+std::string MimeText(const std::string& path) {
+    Reader r;
+    if (!r.Open(path, 32ull * 1024 * 1024)) return {};
+    std::string raw;
+    if (!r.ReadPrefix(32u * 1024 * 1024, raw)) return {};
+    const std::string s = Decode(raw);      // 先做编码归一（GBK/UTF-16/UTF-8）
+
+    std::string out;
+    std::string line;
+    std::string b64;                        // 累积连续的 base64 行
+    auto flushB64 = [&] {
+        if (b64.size() >= 64) {
+            const std::string d = DecodeBase64(b64);
+            // 解出来是文字才要（附件/图片会是二进制）
+            size_t bad = 0;
+            for (unsigned char c : d) if (c < 0x09 || (c > 0x0D && c < 0x20)) ++bad;
+            if (!d.empty() && bad * 10 < d.size()) Append(out, d);
+        }
+        b64.clear();
+    };
+
+    for (size_t i = 0; i <= s.size(); ++i) {
+        if (i == s.size() || s[i] == '\n') {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            bool isB64 = line.size() >= 60;
+            if (isB64) {
+                for (char c : line) if (B64Val(c) < 0 && c != '=') { isB64 = false; break; }
+            }
+            if (isB64) {
+                b64 += line;
+            } else {
+                flushB64();
+                Append(out, DecodeQuotedPrintable(line));
+            }
+            line.clear();
+            if (out.size() > kStoreCap) break;
+            continue;
+        }
+        line.push_back(s[i]);
+    }
+    flushB64();
+    return out;
 }
 
 // ======================= SolidWorks（.sldprt/.sldasm/.slddrw）=======================
@@ -1519,7 +1665,8 @@ bool Supports(const std::string& ext) {
     if (IsTextExt(ext)) return true;
     if (ext == ".dxf" || ext == ".step" || ext == ".stp" || ext == ".obj") return true;
     if (IsOoxmlExt(ext)) return true;      // docx/xlsx/pptx/odt...
-    if (ext == ".zip") return true;
+    if (ext == ".zip" || ext == ".epub") return true;
+    if (ext == ".eml" || ext == ".msg") return true;
     // 下面这些靠外部依赖，没装就不列进来，免得全部标成“抽取失败”
     if (ext == ".pdf") return PdfReady();
     if (ext == ".dwg") return DwgReady();
@@ -1597,6 +1744,9 @@ std::string Text(const std::string& path, const std::string& ext) {
     }
     if (IsOoxmlExt(ext)) return OoxmlText(path, ext);
     if (ext == ".zip") return ZipStrings(path);
+    if (ext == ".epub") return EpubText(path);
+    if (ext == ".eml") return DecodeAndTrim(MimeText(path));
+    if (ext == ".msg") return DecodeAndTrim(LegacyUtf16Strings(path));
 
     // 下面这些吐的是“原始字节”：DXF/STEP 可能是 GBK（$DWGCODEPAGE ANSI_936）
     if (ext == ".dwg") return DecodeAndTrim(DwgText(path));
