@@ -2492,7 +2492,23 @@ static void DrawUI() {
     }
     ImGui::SameLine();
 
-    ImGui::SetNextItemWidth(200);
+    // 主题切换贴在右上角
+    static const char* themeLabels[] = {"亮色", "暗色"};
+    const float toggleW = SegmentedWidth(themeLabels, 2);
+    const float rightEdge = ImGui::GetWindowContentRegionMax().x;
+    const float toggleX = rightEdge - toggleW;
+    if (toggleX > ImGui::GetCursorPosX() + 8.0f) ImGui::SameLine(toggleX);
+    else ImGui::SameLine();
+    const int themeIdx = Segmented("theme", themeLabels, 2, g_darkTheme ? 1 : 0, 30.0f);
+    if ((themeIdx == 1) != g_darkTheme) SetTheme(themeIdx == 1);
+
+    // ---- 第二行：搜索框 + 后缀标签并排（左对齐，标签超出就换行）----
+    ImGui::Dummy(ImVec2(0, 3));
+    const float rowX = 8.0f;
+    const float searchW = 300.0f;
+
+    ImGui::SetCursorPosX(rowX);
+    ImGui::SetNextItemWidth(searchW);
     bool go = ImGui::InputTextWithHint("##search",
                                        g_searchMode ? "搜索文件内容…" : "搜索文件名…",
                                        g_searchBuf, sizeof g_searchBuf,
@@ -2501,23 +2517,22 @@ static void DrawUI() {
         RunSearchNow(g_searchBuf);
         g_mode = g_searchBuf[0] ? 2 : 0;
     }
-    static float g_searchBoxX = -1.0f;
-    g_searchBoxX = ImGui::GetItemRectMin().x - ImGui::GetWindowPos().x;
 
-    // 后缀筛选：搜索框下面一排可点的标签（内联，不用弹窗）
     if (g_searchMode == 1) {
-        if (g_extListDirty) {
+        // 索引建完（文件数变化）或换了扫描根目录时重新取一次后缀列表
+        static std::string lastExtRoot;
+        static int lastExtFiles = -1;
+        if (g_extListDirty || lastExtRoot != g_rootPath || lastExtFiles != content::g_files.load()) {
             g_extList = content::ListExtensions(g_rootPath);
+            lastExtRoot = g_rootPath;
+            lastExtFiles = content::g_files.load();
             g_extListDirty = false;
         }
         if (!g_extList.empty()) {
-            ImGui::Dummy(ImVec2(0, 3));
-            const float rightEdge = ImGui::GetWindowContentRegionMax().x;
-            const float startX = (g_searchBoxX > 0.0f) ? g_searchBoxX : ImGui::GetCursorPosX();
-            ImGui::SetCursorPosX(startX);
-            float x = startX;
+            const float topX = rowX + searchW + 8.0f;   // 第一行从搜索框右边开始
+            float x = topX;
 
-            // shadcn 风格的 ToggleGroup：统一 8px 圆角 / 26px 高 / 1px 边框 / 4px 间距
+            // shadcn ToggleGroup：8px 圆角 / 26px 高 / 1px 边框 / 4px 间距
             bool firstChip = true;
             auto chip = [&](const std::string& text, bool active) -> bool {
                 ImGui::PushFont(g_fontSmall);
@@ -2525,11 +2540,16 @@ static void DrawUI() {
                 const float w = ts.x + 20.0f;
                 const float h = 26.0f;
 
-                if (!firstChip) {
-                    if (x + w > rightEdge) { ImGui::NewLine(); x = startX; }
-                    else ImGui::SameLine(x);
+                if (firstChip) {
+                    ImGui::SameLine(topX);
+                    firstChip = false;
+                } else if (x + w > rightEdge) {
+                    ImGui::NewLine();
+                    ImGui::SetCursorPosX(rowX);
+                    x = rowX;
+                } else {
+                    ImGui::SameLine(x);
                 }
-                firstChip = false;
 
                 const ImVec2 p = ImGui::GetCursorScreenPos();
                 ImGui::InvisibleButton(text.c_str(), ImVec2(w, h));
@@ -2553,34 +2573,15 @@ static void DrawUI() {
             };
 
             if (chip("全部", g_extFilter.empty())) g_extFilter.clear();
-            int shown = 0;
             for (auto& e : g_extList) {
-                if (shown >= 24) {                       // 太多就收起来，别把顶栏撑爆
-                    char more[48];
-                    snprintf(more, sizeof more, "+%d 种", (int)g_extList.size() - shown);
-                    ImGui::TextDisabled("%s", more);
-                    break;
-                }
-                const std::string lbl = e.ext;
                 const bool on = g_extFilter.count(e.ext) > 0;
-                if (chip(lbl, on)) {
+                if (chip(e.ext, on)) {
                     if (on) g_extFilter.erase(e.ext);
                     else g_extFilter.insert(e.ext);
                 }
-                ++shown;
             }
         }
     }
-
-    // 主题切换贴在右上角
-    static const char* themeLabels[] = {"亮色", "暗色"};
-    float toggleW = SegmentedWidth(themeLabels, 2);
-    float rightEdge = ImGui::GetWindowContentRegionMax().x;
-    float toggleX = rightEdge - toggleW;
-    if (toggleX > ImGui::GetCursorPosX() + 8.0f) ImGui::SameLine(toggleX);
-    else ImGui::SameLine();
-    int themeIdx = Segmented("theme", themeLabels, 2, g_darkTheme ? 1 : 0, 30.0f);
-    if ((themeIdx == 1) != g_darkTheme) SetTheme(themeIdx == 1);
 
     ImGui::Dummy(ImVec2(0, 2));
     DrawStatusStrip();
