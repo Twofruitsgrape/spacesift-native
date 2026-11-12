@@ -22,6 +22,10 @@ bool HasIndex(const std::string& root);
 // 单字查询或 MATCH 不可用时退回 LIKE 全表扫描。
 std::vector<db::Hit> Search(const std::string& root, const std::string& query, int limit);
 
+// 索引里有哪些扩展名、各多少条（给界面做后缀筛选）
+struct ExtCount { std::string ext; int count; };
+std::vector<ExtCount> ListExtensions(const std::string& root);
+
 // 后台线程跑。cancel 置位即尽快退出（已写入的部分保留）。
 void Build(const std::string& root, const std::atomic<bool>& cancel);
 

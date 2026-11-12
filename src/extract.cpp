@@ -45,6 +45,8 @@ bool IsTextExt(const std::string& e) {
         ".ctb", ".stb", ".scr", ".lsp",
         // CAE 输入/文本输出：ABAQUS .inp/.dat/.msg/.sta，ANSYS .cdb/.anf/.wbpj
         ".inp", ".dat", ".msg", ".sta", ".cdb", ".anf", ".wbpj",
+        // ABAQUS 的 journal / replay 也是纯文本（建模命令，含零件名与材料名）
+        ".jnl", ".rpy",
     };
     for (const char* x : kExts) if (e == x) return true;
     return false;
@@ -1136,6 +1138,11 @@ bool ReadableCp(unsigned cp) {
 std::string ScanUtf16At(const std::string& raw, size_t parity, int* charsOut) {
     std::string out, buf;
     int cnt = 0, total = 0;
+    // ASCII 被两两读成 UTF-16 会产生"假汉字"（"Th" -> U+6854），
+    // 特征是每个码点的低字节都落在可打印 ASCII 区间；真汉字不会全都这样。
+    bool hasNonLatin = false;
+    bool allLowAscii = true;
+    int  cjkCount = 0;
     const size_t n = raw.size() ? raw.size() - 1 : 0;
     size_t i = parity;
     while (i < n && out.size() < kStoreCap) {
@@ -1143,10 +1150,24 @@ std::string ScanUtf16At(const std::string& raw, size_t parity, int* charsOut) {
         if (ReadableCp(cp)) {
             AppendCodepoint(buf, cp);
             ++cnt;
+            if (cp > 0xFF) hasNonLatin = true;
+            if (cp >= 0x4E00 && cp <= 0x9FFF) ++cjkCount;
+            const unsigned low = cp & 0xFF;
+            if (low > 0x7F) allLowAscii = false;   // 低字节全是 ASCII → 是被两两读坏的 ASCII
             i += 2;
             continue;
         }
-        if (cnt >= 6) { Append(out, buf); total += cnt; }   // 太短的段基本都是二进制噪音
+        // 太短的段基本都是二进制噪音；没有非拉丁字符的多半是 ASCII 被误读
+        // 要求：够长 + 有非拉丁字符 + 不是被读坏的 ASCII + 汉字占比过半
+        if (cnt >= 6 && hasNonLatin && !allLowAscii && cjkCount * 2 >= cnt) {
+            Append(out, buf);
+            total += cnt;
+        }
+        buf.clear();
+        cnt = 0;
+        hasNonLatin = false;
+        allLowAscii = true;
+        cjkCount = 0;
         buf.clear();
         cnt = 0;
         // 断档后必须回到指定奇偶性再重开一段，

@@ -360,6 +360,31 @@ void ResetProgress() {
     { std::lock_guard<std::mutex> lk(g_mutex); g_curPath.clear(); g_lastError.clear(); }
 }
 
+std::vector<ExtCount> ListExtensions(const std::string& root) {
+    std::vector<ExtCount> out;
+    if (!HasIndex(root)) return out;
+    sqlite3* db = nullptr;
+    if (sqlite3_open_v2(DbPathFor(root).c_str(), &db, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK) {
+        if (db) sqlite3_close(db);
+        return out;
+    }
+    sqlite3_stmt* st = nullptr;
+    if (sqlite3_prepare_v2(db,
+            "SELECT ext, COUNT(*) FROM docs GROUP BY ext ORDER BY COUNT(*) DESC",
+            -1, &st, nullptr) == SQLITE_OK) {
+        while (sqlite3_step(st) == SQLITE_ROW) {
+            const unsigned char* e = sqlite3_column_text(st, 0);
+            ExtCount c;
+            c.ext = e ? (const char*)e : "";
+            c.count = (int)sqlite3_column_int64(st, 1);
+            if (!c.ext.empty()) out.push_back(std::move(c));
+        }
+        sqlite3_finalize(st);
+    }
+    sqlite3_close(db);
+    return out;
+}
+
 void Build(const std::string& root, const std::atomic<bool>& cancel) {
     ResetProgress();
     g_busy = true;

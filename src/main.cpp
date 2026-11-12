@@ -133,6 +133,10 @@ static std::string          g_searchQuery;
 static int                 g_searchMode = 0;
 static std::atomic<bool>   g_contentBusy{false};   // UI 侧镜像，防止重复起线程
 static std::atomic<bool>   g_contentCancel{false};
+static std::set<std::string> g_extFilter;   // 后缀筛选（空 = 全部）
+static std::vector<content::ExtCount> g_extList;   // 弹窗里的后缀列表（缓存）
+static bool g_extListDirty = true;
+static bool g_extPopOnce = false;   // 测试钩子：启动就打开后缀弹窗
 
 static int  g_current = -1;
 static char g_pathBuf[512] = "C:\\";
@@ -327,6 +331,7 @@ static void ApplyTheme() {
     s.ScrollbarRounding = 9.0f;
     s.GrabRounding      = 9.0f;
     s.WindowBorderSize  = 0.0f;
+    s.FrameBorderSize   = 1.0f;
     s.ChildBorderSize   = 1.0f;
     s.FrameBorderSize   = 0.0f;
     s.PopupBorderSize   = 1.0f;
@@ -1534,7 +1539,19 @@ static void RunSearchNow(const std::string& query) {
     if (query.empty()) return;
     if (g_searchMode == 1) {
         // 内容索引是独立库；没建过就直接返回空，由右栏引导去建
-        g_hits = content::Search(g_rootPath, query, 400);
+        std::string q = query;
+        if (!g_extFilter.empty()) {
+            q += " ext:";
+            bool first = true;
+            for (const auto& e : g_extFilter) {
+                std::string one = e;
+                if (!one.empty() && one[0] == '.') one.erase(one.begin());
+                if (!first) q += ",";
+                q += one;
+                first = false;
+            }
+        }
+        g_hits = content::Search(g_rootPath, q, 400);
         return;
     }
     std::string indexPath = db::IndexPathFor(g_rootPath);
@@ -1542,6 +1559,18 @@ static void RunSearchNow(const std::string& query) {
     db::OpenExisting(indexPath);
     g_hits = db::Search(query, 400);
     db::Close();
+    if (!g_extFilter.empty()) {
+        g_hits.erase(std::remove_if(g_hits.begin(), g_hits.end(),
+                                    [](const db::Hit& h) {
+                                        std::string e = h.path;
+                                        const size_t dot = e.find_last_of('.');
+                                        if (dot == std::string::npos) return true;
+                                        e = e.substr(dot);
+                                        for (auto& c : e) c = (char)tolower((unsigned char)c);
+                                        return g_extFilter.count(e) == 0;
+                                    }),
+                     g_hits.end());
+    }
 }
 
 // 当前左侧打开目录的完整路径。扫描中 g_entries 正在重建，只能退回扫描根。
@@ -1874,11 +1903,19 @@ static void DrawContentSearchTab() {
             const int scanned = (int)g_fileCount.load();
             const int cand = content::g_seen.load();
             if (scanned > 0 && cand > 0)
-                ImGui::TextDisabled("扫描 %d 个文件，其中 %d 个可抽正文（其余是依赖目录/不支持格式/图片未开 OCR）",
-                                    scanned, cand);
+            {
+                ImGui::PushStyleColor(ImGuiCol_Text, ThemeColor(g_ui.textDim));
+                ImGui::TextWrapped("扫描 %d 个文件 → 可抽正文 %d 个（其余是依赖目录、不支持的格式、未开 OCR 的图片）",
+                                   scanned, cand);
+                ImGui::PopStyleColor();
+            }
         }
         ImGui::Dummy(ImVec2(0, 2));
-        ImGui::TextDisabled("语法：词A 词B（同时含）· A OR B · -排除 · ext:pdf · name:报告 · size:>10m · after:2024-06");
+        {
+            ImGui::PushStyleColor(ImGuiCol_Text, ThemeColor(g_ui.textDim));
+            ImGui::TextWrapped("语法：词A 词B（同时含）· A OR B · -排除 · ext:pdf · name:报告 · size:>10m · after:2024-06");
+            ImGui::PopStyleColor();
+        }
         if (lastFresh > 0 || lastReused > 0)
             ImGui::TextDisabled("本次：新抽取 %d 个，复用上次结果 %d 个。", lastFresh, lastReused);
         if (GhostButton("增量更新", ImVec2(0, 26))) StartContentIndex();
@@ -1892,17 +1929,24 @@ static void DrawContentSearchTab() {
             ImGui::TextDisabled("提示：.7z/.rar 需要安装 7-Zip 或 WinRAR。");
         {
             static bool ocrDirty = false;
-            bool ocr = extract::OcrReady();
-            if (ImGui::Checkbox("OCR 图片（截图/照片，慢）", &ocr)) {
-                extract::SetOcrEnabled(ocr);
+            const bool ocrOn = extract::OcrReady();
+            char ocrLbl[64];
+            snprintf(ocrLbl, sizeof ocrLbl, "OCR 图片：%s", ocrOn ? "开" : "关");
+            if (GhostButton(ocrLbl, ImVec2(0, 26))) {
+                extract::SetOcrEnabled(!ocrOn);
                 ocrDirty = true;      // 开关变了要整库重建，否则旧的"抽空"记录不会重试
             }
+            ImGui::SameLine();
             if (ocrDirty && content::HasIndex(g_rootPath))
                 ImGui::TextDisabled("设置已改变 —— 点下面的「增量更新」重新索引。");
             if (!extract::OcrAvailable())
                 ImGui::TextDisabled("（扫描件 PDF 需装 Tesseract-OCR 才会自动识别）");
             else
-                ImGui::TextDisabled("扫描件 PDF 自动识别（每次最多 120 页）；这个开关只管图片。");
+            {
+                ImGui::PushStyleColor(ImGuiCol_Text, ThemeColor(g_ui.textDim));
+                ImGui::TextWrapped("扫描件 PDF 自动识别（每次最多 120 页）；这个开关只管图片。");
+                ImGui::PopStyleColor();
+            }
         }
         return;
     }
@@ -2448,7 +2492,7 @@ static void DrawUI() {
     }
     ImGui::SameLine();
 
-    ImGui::SetNextItemWidth(236);
+    ImGui::SetNextItemWidth(200);
     bool go = ImGui::InputTextWithHint("##search",
                                        g_searchMode ? "搜索文件内容…" : "搜索文件名…",
                                        g_searchBuf, sizeof g_searchBuf,
@@ -2456,6 +2500,76 @@ static void DrawUI() {
     if (go) {
         RunSearchNow(g_searchBuf);
         g_mode = g_searchBuf[0] ? 2 : 0;
+    }
+    static float g_searchBoxX = -1.0f;
+    g_searchBoxX = ImGui::GetItemRectMin().x - ImGui::GetWindowPos().x;
+
+    // 后缀筛选：搜索框下面一排可点的标签（内联，不用弹窗）
+    if (g_searchMode == 1) {
+        if (g_extListDirty) {
+            g_extList = content::ListExtensions(g_rootPath);
+            g_extListDirty = false;
+        }
+        if (!g_extList.empty()) {
+            ImGui::Dummy(ImVec2(0, 3));
+            const float rightEdge = ImGui::GetWindowContentRegionMax().x;
+            const float startX = (g_searchBoxX > 0.0f) ? g_searchBoxX : ImGui::GetCursorPosX();
+            ImGui::SetCursorPosX(startX);
+            float x = startX;
+
+            // shadcn 风格的 ToggleGroup：统一 8px 圆角 / 26px 高 / 1px 边框 / 4px 间距
+            bool firstChip = true;
+            auto chip = [&](const std::string& text, bool active) -> bool {
+                ImGui::PushFont(g_fontSmall);
+                const ImVec2 ts = ImGui::CalcTextSize(text.c_str());
+                const float w = ts.x + 20.0f;
+                const float h = 26.0f;
+
+                if (!firstChip) {
+                    if (x + w > rightEdge) { ImGui::NewLine(); x = startX; }
+                    else ImGui::SameLine(x);
+                }
+                firstChip = false;
+
+                const ImVec2 p = ImGui::GetCursorScreenPos();
+                ImGui::InvisibleButton(text.c_str(), ImVec2(w, h));
+                const bool hovered = ImGui::IsItemHovered();
+                const bool clicked = ImGui::IsItemClicked();
+
+                ImDrawList* dl = ImGui::GetWindowDrawList();
+                const ImU32 bg = active ? ThemeColor(g_ui.brand)
+                                : hovered ? ThemeColor(g_ui.cardHover)
+                                          : ThemeColor(g_ui.cardBg);
+                const ImU32 bd = active ? ThemeColor(g_ui.brand) : ThemeColor(g_ui.border);
+                dl->AddRectFilled(p, ImVec2(p.x + w, p.y + h), bg, 8.0f);
+                dl->AddRect(p, ImVec2(p.x + w, p.y + h), bd, 8.0f, 0, 1.0f);
+                dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(),
+                            ImVec2(p.x + (w - ts.x) * 0.5f, p.y + (h - ts.y) * 0.5f),
+                            active ? IM_COL32(255, 255, 255, 255) : ThemeColor(g_ui.text),
+                            text.c_str());
+                ImGui::PopFont();
+                x += w + 4.0f;
+                return clicked;
+            };
+
+            if (chip("全部", g_extFilter.empty())) g_extFilter.clear();
+            int shown = 0;
+            for (auto& e : g_extList) {
+                if (shown >= 24) {                       // 太多就收起来，别把顶栏撑爆
+                    char more[48];
+                    snprintf(more, sizeof more, "+%d 种", (int)g_extList.size() - shown);
+                    ImGui::TextDisabled("%s", more);
+                    break;
+                }
+                const std::string lbl = e.ext;
+                const bool on = g_extFilter.count(e.ext) > 0;
+                if (chip(lbl, on)) {
+                    if (on) g_extFilter.erase(e.ext);
+                    else g_extFilter.insert(e.ext);
+                }
+                ++shown;
+            }
+        }
     }
 
     // 主题切换贴在右上角
@@ -2636,6 +2750,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
     if (std::getenv("SPACESIFT_CONTENT")) g_pendingContent = true;
     // 测试钩子：SPACESIFT_TAB=2 直接打开「检索结果」页签（看建索引进度用）
     if (const char* tab = std::getenv("SPACESIFT_TAB")) g_mode = atoi(tab);
+    if (std::getenv("SPACESIFT_EXTPOP")) g_extPopOnce = true;
     if (std::getenv("SPACESIFT_AUTOSCAN")) StartScan(g_pathBuf);
 
     bool done = false;
