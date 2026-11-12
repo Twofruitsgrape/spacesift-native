@@ -2492,7 +2492,18 @@ static void DrawUI() {
     }
     ImGui::SameLine();
 
-    // 主题切换贴在右上角
+    // 搜索框跟在 文件名|内容 后面（左对齐），主题切换推到最右
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(320);
+    const bool go = ImGui::InputTextWithHint("##search",
+                                             g_searchMode ? "搜索文件内容…" : "搜索文件名…",
+                                             g_searchBuf, sizeof g_searchBuf,
+                                             ImGuiInputTextFlags_EnterReturnsTrue);
+    if (go) {
+        RunSearchNow(g_searchBuf);
+        g_mode = g_searchBuf[0] ? 2 : 0;
+    }
+
     static const char* themeLabels[] = {"亮色", "暗色"};
     const float toggleW = SegmentedWidth(themeLabels, 2);
     const float rightEdge = ImGui::GetWindowContentRegionMax().x;
@@ -2502,24 +2513,8 @@ static void DrawUI() {
     const int themeIdx = Segmented("theme", themeLabels, 2, g_darkTheme ? 1 : 0, 30.0f);
     if ((themeIdx == 1) != g_darkTheme) SetTheme(themeIdx == 1);
 
-    // ---- 第二行：搜索框 + 后缀标签并排（左对齐，标签超出就换行）----
-    ImGui::Dummy(ImVec2(0, 3));
-    const float rowX = 8.0f;
-    const float searchW = 300.0f;
-
-    ImGui::SetCursorPosX(rowX);
-    ImGui::SetNextItemWidth(searchW);
-    bool go = ImGui::InputTextWithHint("##search",
-                                       g_searchMode ? "搜索文件内容…" : "搜索文件名…",
-                                       g_searchBuf, sizeof g_searchBuf,
-                                       ImGuiInputTextFlags_EnterReturnsTrue);
-    if (go) {
-        RunSearchNow(g_searchBuf);
-        g_mode = g_searchBuf[0] ? 2 : 0;
-    }
-
-    if (g_searchMode == 1) {
-        // 索引建完（文件数变化）或换了扫描根目录时重新取一次后缀列表
+    // ---- 筛选条：只在「内容模式 + 已有搜索结果」时出现在下面那块空位 ----
+    if (g_searchMode == 1 && !g_searchQuery.empty()) {
         static std::string lastExtRoot;
         static int lastExtFiles = -1;
         if (g_extListDirty || lastExtRoot != g_rootPath || lastExtFiles != content::g_files.load()) {
@@ -2529,10 +2524,17 @@ static void DrawUI() {
             g_extListDirty = false;
         }
         if (!g_extList.empty()) {
-            const float topX = rowX + searchW + 8.0f;   // 第一行从搜索框右边开始
-            float x = topX;
+            const float rowX = 8.0f;
+            ImGui::Dummy(ImVec2(0, 12));      // 上方留白
+            ImGui::SetCursorPosX(rowX);
 
-            // shadcn ToggleGroup：8px 圆角 / 26px 高 / 1px 边框 / 4px 间距
+            ImGui::PushFont(g_fontSmall);
+            ImGui::TextDisabled("筛选");
+            ImGui::PopFont();
+            ImGui::SameLine(0, 10);
+
+            float x = ImGui::GetCursorPosX();
+            const float startX = x;
             bool firstChip = true;
             auto chip = [&](const std::string& text, bool active) -> bool {
                 ImGui::PushFont(g_fontSmall);
@@ -2540,16 +2542,11 @@ static void DrawUI() {
                 const float w = ts.x + 20.0f;
                 const float h = 26.0f;
 
-                if (firstChip) {
-                    ImGui::SameLine(topX);
-                    firstChip = false;
-                } else if (x + w > rightEdge) {
-                    ImGui::NewLine();
-                    ImGui::SetCursorPosX(rowX);
-                    x = rowX;
-                } else {
-                    ImGui::SameLine(x);
+                if (!firstChip) {
+                    if (x + w > rightEdge) { ImGui::NewLine(); ImGui::SetCursorPosX(startX); x = startX; }
+                    else ImGui::SameLine(x);
                 }
+                firstChip = false;
 
                 const ImVec2 p = ImGui::GetCursorScreenPos();
                 ImGui::InvisibleButton(text.c_str(), ImVec2(w, h));
@@ -2572,14 +2569,19 @@ static void DrawUI() {
                 return clicked;
             };
 
-            if (chip("全部", g_extFilter.empty())) g_extFilter.clear();
+            if (chip("全部", g_extFilter.empty())) {
+                g_extFilter.clear();
+                RunSearchNow(g_searchBuf);
+            }
             for (auto& e : g_extList) {
                 const bool on = g_extFilter.count(e.ext) > 0;
                 if (chip(e.ext, on)) {
                     if (on) g_extFilter.erase(e.ext);
                     else g_extFilter.insert(e.ext);
+                    RunSearchNow(g_searchBuf);   // 点一下立刻重搜，不用再按回车
                 }
             }
+            ImGui::Dummy(ImVec2(0, 10));      // 下方留白
         }
     }
 
