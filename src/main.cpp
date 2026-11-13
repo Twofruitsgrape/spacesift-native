@@ -149,6 +149,8 @@ static std::set<std::string> g_selected;        // 推荐清理：按规则 id
 static std::map<std::string, uint64_t> g_deepSelected;   // 深度清理：路径 -> 大小
 static std::map<std::string, uint64_t> g_hitSelected;    // 检索结果：路径 -> 大小
 static std::string g_lastCleanMsg;
+static bool g_revealDenied = false;   // 最近一次「打开所在位置」是不是被权限拦下了
+
 static int  g_expandRestParent = -1;   // 点击「（其余 N 项）」后展开这个父目录的全部子项
 
 // ============================================================ UI 主题
@@ -458,6 +460,70 @@ static void RvLog(const char* fmt, ...) {
     va_end(ap);
     fputc('\n', f);
     fflush(f);
+}
+
+// 进程完整性级别：资源管理器被提权过（High）时，普通权限的程序
+// 调 SHOpenFolderAndSelectItems / ShellExecute 都会拿到 0x80070005 或 5。
+// 用户看到的就是「点了没反应」，所以失败信息里要把这一点说清楚。
+static const char* IntegrityName(HANDLE hProc) {
+    HANDLE tok = nullptr;
+    if (!OpenProcessToken(hProc, TOKEN_QUERY, &tok)) return "?";
+    DWORD need = 0;
+    GetTokenInformation(tok, TokenIntegrityLevel, nullptr, 0, &need);
+    std::vector<unsigned char> buf(need ? need : 64);
+    const char* name = "?";
+    if (GetTokenInformation(tok, TokenIntegrityLevel, buf.data(), (DWORD)buf.size(), &need)) {
+        auto* label = (TOKEN_MANDATORY_LABEL*)buf.data();
+        BYTE* sid = (BYTE*)label->Label.Sid;
+        DWORD rid = *(DWORD*)(sid + 8 + 4 * (sid[1] - 1));
+        switch (rid) {
+            case 0x1000: name = "Low"; break;
+            case 0x2000: name = "Medium"; break;
+            case 0x3000: name = "High"; break;
+            case 0x4000: name = "System"; break;
+            default: name = "Other"; break;
+        }
+    }
+    CloseHandle(tok);
+    return name;
+}
+
+static int IntegrityRank(const char* s) {
+    if (!s) return 0;
+    if (!strcmp(s, "Low")) return 1;
+    if (!strcmp(s, "Medium")) return 2;
+    if (!strcmp(s, "High")) return 3;
+    if (!strcmp(s, "System")) return 4;
+    return 0;
+}
+
+// 本程序 + 资源管理器各自的完整性级别，用于日志和提示
+static void LogIntegrity(const char* where) {
+    char self[16] = "?";
+    char shell[16] = "?";
+    HANDLE me = GetCurrentProcess();
+    snprintf(self, sizeof self, "%s", IntegrityName(me));
+    DWORD shellPid = 0;
+    GetWindowThreadProcessId(GetShellWindow(), &shellPid);
+    HANDLE hs = shellPid ? OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, shellPid)
+                         : nullptr;
+    if (hs) {
+        snprintf(shell, sizeof shell, "%s", IntegrityName(hs));
+        CloseHandle(hs);
+    }
+    RvLog("[reveal] %s 本程序=%s 资源管理器=%s", where, self, shell);
+}
+
+// 用管理员权限重新启动自己，带上要定位的路径。
+// 用户实测「右键以管理员身份运行就正常」，所以把这条路做成一键。
+static bool RelaunchElevatedForReveal(const std::wstring& path) {
+    wchar_t exe[MAX_PATH] = {0};
+    if (!GetModuleFileNameW(nullptr, exe, MAX_PATH)) return false;
+    std::wstring args = L"--reveal \"" + path + L"\"";
+    HINSTANCE r = ShellExecuteW(nullptr, L"runas", exe, args.c_str(), nullptr, SW_SHOWNORMAL);
+    bool ok = (INT_PTR)r > 32;
+    RvLog("[reveal] RelaunchElevated ok=%d r=%ld", (int)ok, (long)(INT_PTR)r);
+    return ok;
 }
 
 // 直接起 explorer.exe（用完整路径），参数原样传。不走 shell 关联、不走 DDE。
@@ -788,6 +854,7 @@ static void RevealInExplorer(const std::string& path) {
           (int)w.size(), (unsigned long)attr, (int)exists, (int)isDir, (int)admin);
 
     AllowSetForegroundWindow(ASFW_ANY);
+    g_revealDenied = false;
 
     std::vector<HWND> before;
     ShellWindowsBefore(before);
@@ -801,6 +868,9 @@ static void RevealInExplorer(const std::string& path) {
             g_lastCleanMsg = "已在资源管理器中定位";
             return;
         }
+        if (diag.find("0x80070005") != std::string::npos ||
+            diag.find("SE=5") != std::string::npos)
+            g_revealDenied = true;
         // 选不中就至少打开所在目录
         std::string d2;
         if (!parent.empty() && OpenFolderW(parent, before, &d2)) {
@@ -808,8 +878,10 @@ static void RevealInExplorer(const std::string& path) {
                              (admin ? " 管理员模式" : "");
             return;
         }
-        g_lastCleanMsg = std::string("打开资源管理器失败(") + diag + d2 + ")" +
-                         (admin ? " 管理员模式" : "");
+        LogIntegrity("失败诊断:");
+        g_lastCleanMsg = std::string("权限被拦(0x80070005)：") +
+                         (admin ? "以管理员运行时打不开，试试普通权限启动" 
+                                : "右键这条 → 以管理员身份打开所在位置");
         return;
     }
 
@@ -819,6 +891,9 @@ static void RevealInExplorer(const std::string& path) {
         if (OpenFolderW(w, before, &diag)) {
             g_lastCleanMsg = "已打开目录";
         } else {
+            if (diag.find("0x80070005") != std::string::npos ||
+                diag.find("SE=5") != std::string::npos)
+                g_revealDenied = true;
             g_lastCleanMsg = std::string("打开目录失败(") + diag + ")" + (admin ? " 管理员模式" : "");
         }
         return;
@@ -870,6 +945,12 @@ static bool ShowPathMenu(const std::string& path) {
     if (!ImGui::BeginPopup("ctx")) return false;
     bool picked = false;
     if (ImGui::MenuItem("打开所在位置")) RevealInExplorer(path);
+    if (g_revealDenied && !IsUserAnAdmin()) {
+        if (ImGui::MenuItem("以管理员身份打开所在位置")) {
+            RelaunchElevatedForReveal(Utf8ToWide(path));
+            g_lastCleanMsg = "已请求管理员权限，确认后会自动定位";
+        }
+    }
     if (ImGui::MenuItem("复制路径")) {
         g_lastCleanMsg = CopyToClipboard(path) ? "路径已复制" : "复制失败";
     }
@@ -3266,6 +3347,27 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
     g_mainHwnd = hwnd;
     // COM 要在读 shell 目录（SHGetFolderPathW）之前初始化
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+
+    // 提权实例：--reveal "路径" → 只做定位然后退出，不显示窗口
+    {
+        std::wstring cl = GetCommandLineW();
+        const std::wstring key = L"--reveal ";
+        size_t at = cl.find(key);
+        if (at != std::wstring::npos) {
+            std::wstring rest = cl.substr(at + key.size());
+            if (!rest.empty() && rest[0] == L'"') {
+                size_t end = rest.find(L'"', 1);
+                if (end != std::wstring::npos) rest = rest.substr(1, end - 1);
+            } else {
+                size_t sp = rest.find(L' ');
+                if (sp != std::wstring::npos) rest = rest.substr(0, sp);
+            }
+            RvLog("[reveal] 提权实例接手 %s", WideToUtf8(rest).c_str());
+            RevealInExplorer(WideToUtf8(rest));
+            Sleep(1500);
+            return 0;
+        }
+    }
     g_darkTheme = LoadThemeSetting();
     ApplyDarkTitleBar();
     if (!CreateDeviceD3D(hwnd)) {

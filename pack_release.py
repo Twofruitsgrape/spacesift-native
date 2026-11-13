@@ -5,7 +5,7 @@ ROOT = r"C:\Users\ALICE\dev\SpaceSift-Native"
 DIST = os.path.join(ROOT, "dist")
 PKG = os.path.join(ROOT, "packaging")
 OUT = os.path.join(ROOT, "build", "pkg")
-VER = "2.1.0"
+VER = "2.1.1"
 NAME = f"SpaceSift-{VER}"
 
 if os.path.isdir(OUT):
