@@ -65,7 +65,7 @@ selftest.bat "D:\某个目录"
 点「更多信息 → 仍要运行」即可。校验文件完整性：
 
 ```powershell
-Get-FileHash .\SpaceSift-2.0.5-portable.zip -Algorithm SHA256
+Get-FileHash .\SpaceSift-2.3.0-portable.zip -Algorithm SHA256
 # 对比发行页 SHA256SUMS.txt 里的值
 ```
 
@@ -75,7 +75,7 @@ Get-FileHash .\SpaceSift-2.0.5-portable.zip -Algorithm SHA256
 **2.x 起整个程序就是一个原生 exe（静态链接），不再需要 WebView2，也不安装任何运行时**；
 只要 Windows 10 1803+ / Windows 11，64 位。
 
-如果你的安装包一启动就弹这个窗，说明下到旧版了：回 Releases 页面下 2.2.1，
+如果你的安装包一启动就弹这个窗，说明下到旧版了：回 Releases 页面下 2.3.0，
 别装旧包，也别为它去装 WebView2。
 
 ## 功能
