@@ -1,4 +1,5 @@
 #include "db.h"
+#include "i18n.h"
 
 #include <windows.h>
 #include <shlobj.h>
@@ -407,7 +408,7 @@ std::vector<IndexInfo> ListIndexes() {
         info.builtAt = atoll(MetaValue(info.dbPath, "built_at").c_str());
         info.files = atoll(MetaValue(info.dbPath, "files").c_str());
         info.partial = MetaValue(info.dbPath, "partial") == "1";
-        if (info.root.empty()) info.root = "(未知)";
+        if (info.root.empty()) info.root = TR("(未知)", "(unknown)");
         out.push_back(std::move(info));
     } while (FindNextFileW(h, &fd));
     FindClose(h);
@@ -424,7 +425,7 @@ std::vector<Hit> SearchAll(const std::string& query, int limit,
     std::unordered_map<std::string, size_t> byPath;
     for (const IndexInfo& idx : ListIndexes()) {
         if (cancel && cancel->load()) break;
-        if (idx.root == "(未知)") continue;
+        if (idx.root == TR("(未知)", "(unknown)")) continue;
         std::vector<Hit> part = SearchIn(idx.dbPath, query, limit, cancel);
         for (auto& h : part) {
             if (h.path.empty()) continue;

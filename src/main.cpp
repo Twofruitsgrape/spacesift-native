@@ -28,6 +28,8 @@
 #include <shellapi.h>
 #include <exdisp.h>
 
+#include "i18n.h"
+
 #include "imgui.h"
 #include "imgui_impl_dx11.h"
 #include "imgui_impl_win32.h"
@@ -111,7 +113,7 @@ static std::atomic<unsigned long long> g_volumeTotal{0};
 static std::wstring       g_currentPathW;
 static std::mutex         g_currentMutex;
 static double             g_scanSeconds = 0;
-static std::string        g_indexMsg = "索引未建立";
+static std::string        g_indexMsg = TR("索引未建立", "Index not built");
 
 static std::vector<rules::Rule>    g_rules;    // 规则表本体，只在 WinMain 里构造一次
 static std::vector<rules::Finding> g_findings;  // Finding.rule 指向 g_rules 里的元素
@@ -442,6 +444,18 @@ static bool LoadThemeSetting() {
     wchar_t buf[32] = {0};
     GetPrivateProfileStringW(L"ui", L"theme", L"dark", buf, 31, SettingsPath().c_str());
     return wcscmp(buf, L"light") != 0;
+}
+
+// 语言（ui.lang = zh / en），i18n::g_lang 是全局共享状态
+static bool LoadLangSetting() {
+    wchar_t buf[8] = {0};
+    GetPrivateProfileStringW(L"ui", L"lang", L"zh", buf, 7, SettingsPath().c_str());
+    return wcscmp(buf, L"en") == 0;
+}
+
+static void SaveLangSetting() {
+    WritePrivateProfileStringW(L"ui", L"lang", i18n::g_lang == i18n::Lang_EN ? L"en" : L"zh",
+                               SettingsPath().c_str());
 }
 
 static void SaveThemeSetting() {
@@ -892,9 +906,9 @@ static bool SelectFileW(const std::wstring& file, const std::wstring& parent,
 }
 
 static void RevealInExplorer(const std::string& path) {
-    if (path.empty()) { g_lastCleanMsg = "路径为空"; return; }
+    if (path.empty()) { g_lastCleanMsg = TR("路径为空", "Path is empty"); return; }
     const std::wstring w = NormalizePathW(path);
-    if (w.empty()) { g_lastCleanMsg = "路径为空"; return; }
+    if (w.empty()) { g_lastCleanMsg = TR("路径为空", "Path is empty"); return; }
 
     DWORD attr = GetFileAttributesW(w.c_str());
     const bool exists = attr != INVALID_FILE_ATTRIBUTES;
@@ -915,7 +929,7 @@ static void RevealInExplorer(const std::string& path) {
     if (exists && !isDir) {
         std::string diag;
         if (SelectFileW(w, parent, before, &diag)) {
-            g_lastCleanMsg = "已在资源管理器中定位";
+            g_lastCleanMsg = TR("已在资源管理器中定位", "Revealed in Explorer");
             return;
         }
         if (diag.find("0x80070005") != std::string::npos ||
@@ -924,14 +938,14 @@ static void RevealInExplorer(const std::string& path) {
         // 选不中就至少打开所在目录
         std::string d2;
         if (!parent.empty() && OpenFolderW(parent, before, &d2)) {
-            g_lastCleanMsg = std::string("已打开所在目录（未能选中文件：") + diag + "）" +
-                             (admin ? " 管理员模式" : "");
+            g_lastCleanMsg = std::string(TR("已打开所在目录（未能选中文件：", "Opened containing folder (could not select file: ")) + diag + "）" +
+                             (admin ? TR(" 管理员模式", " (admin)") : "");
             return;
         }
-        LogIntegrity("失败诊断:");
-        g_lastCleanMsg = std::string("权限被拦(0x80070005)：") +
-                         (admin ? "以管理员运行时打不开，试试普通权限启动" 
-                                : "右键这条 → 以管理员身份打开所在位置");
+        LogIntegrity(TR("失败诊断:", "Diagnostics: "));
+        g_lastCleanMsg = std::string(TR("权限被拦(0x80070005)：", "Access denied (0x80070005): ")) +
+                         (admin ? TR("以管理员运行时打不开，试试普通权限启动", "Cannot open while elevated; try launching without admin") 
+                                : TR("右键这条 → 以管理员身份打开所在位置", "Right-click this entry → \"Open containing folder (as admin)\""));
         return;
     }
 
@@ -939,12 +953,12 @@ static void RevealInExplorer(const std::string& path) {
     if (exists && isDir) {
         std::string diag;
         if (OpenFolderW(w, before, &diag)) {
-            g_lastCleanMsg = "已打开目录";
+            g_lastCleanMsg = TR("已打开目录", "Folder opened");
         } else {
             if (diag.find("0x80070005") != std::string::npos ||
                 diag.find("SE=5") != std::string::npos)
                 g_revealDenied = true;
-            g_lastCleanMsg = std::string("打开目录失败(") + diag + ")" + (admin ? " 管理员模式" : "");
+            g_lastCleanMsg = std::string(TR("打开目录失败(", "Failed to open folder (")) + diag + ")" + (admin ? TR(" 管理员模式", " (admin)") : "");
         }
         return;
     }
@@ -953,15 +967,15 @@ static void RevealInExplorer(const std::string& path) {
     if (!parent.empty() && GetFileAttributesW(parent.c_str()) != INVALID_FILE_ATTRIBUTES) {
         std::string diag;
         if (OpenFolderW(parent, before, &diag)) {
-            g_lastCleanMsg = "文件已不存在，已打开所在目录";
+            g_lastCleanMsg = TR("文件已不存在，已打开所在目录", "File no longer exists; opened its folder");
         } else {
-            g_lastCleanMsg = std::string("打开资源管理器失败(") + diag + ")" +
-                             (admin ? " 管理员模式" : "");
+            g_lastCleanMsg = std::string(TR("打开资源管理器失败(", "Failed to open Explorer (")) + diag + ")" +
+                             (admin ? TR(" 管理员模式", " (admin)") : "");
         }
         return;
     }
 
-    g_lastCleanMsg = "找不到该文件，所在目录也不存在";
+    g_lastCleanMsg = TR("找不到该文件，所在目录也不存在", "File not found and its folder is gone");
 }
 
 // 写进 Windows 剪贴板（CF_UNICODETEXT）。
@@ -994,17 +1008,17 @@ static bool CopyToClipboard(const std::string& text) {
 static bool ShowPathMenu(const std::string& path) {
     if (!ImGui::BeginPopup("ctx")) return false;
     bool picked = false;
-    if (ImGui::MenuItem("打开所在位置")) RevealInExplorer(path);
+    if (ImGui::MenuItem(TR("打开所在位置", "Open containing folder"))) RevealInExplorer(path);
     if (g_revealDenied && !IsUserAnAdmin()) {
-        if (ImGui::MenuItem("以管理员身份打开所在位置")) {
+        if (ImGui::MenuItem(TR("以管理员身份打开所在位置", "Open containing folder (as admin)"))) {
             RelaunchElevatedForReveal(Utf8ToWide(path));
-            g_lastCleanMsg = "已请求管理员权限，确认后会自动定位";
+            g_lastCleanMsg = TR("已请求管理员权限，确认后会自动定位", "Admin permission requested; it will reveal after you confirm");
         }
     }
-    if (ImGui::MenuItem("复制路径")) {
-        g_lastCleanMsg = CopyToClipboard(path) ? "路径已复制" : "复制失败";
+    if (ImGui::MenuItem(TR("复制路径", "Copy path"))) {
+        g_lastCleanMsg = CopyToClipboard(path) ? TR("路径已复制", "Path copied") : TR("复制失败", "Copy failed");
     }
-    if (ImGui::MenuItem("从这里开始扫描")) {
+    if (ImGui::MenuItem(TR("从这里开始扫描", "Scan from here"))) {
         snprintf(g_pathBuf, sizeof g_pathBuf, "%s", path.c_str());
         g_rootPath = path;
         picked = true;
@@ -1018,10 +1032,10 @@ static bool ShowPathMenu(const std::string& path) {
 static bool PathContextMenuInline(const std::string& path) {
     if (!ImGui::BeginPopup("ctx")) return false;
     bool scan = false;
-    if (ImGui::MenuItem("打开所在位置")) RevealInExplorer(path);
-    if (ImGui::MenuItem("复制路径"))
-        g_lastCleanMsg = CopyToClipboard(path) ? "路径已复制" : "复制失败";
-    if (ImGui::MenuItem("从这里开始扫描")) scan = true;
+    if (ImGui::MenuItem(TR("打开所在位置", "Open containing folder"))) RevealInExplorer(path);
+    if (ImGui::MenuItem(TR("复制路径", "Copy path")))
+        g_lastCleanMsg = CopyToClipboard(path) ? TR("路径已复制", "Path copied") : TR("复制失败", "Copy failed");
+    if (ImGui::MenuItem(TR("从这里开始扫描", "Scan from here"))) scan = true;
     ImGui::EndPopup();
     return scan;
 }
@@ -1138,9 +1152,9 @@ static void ScanWorker(std::string root) {
     bool indexOk = db::Open(indexPath);
     if (indexOk) {
         db::BeginBulk();
-        g_indexMsg = "索引随扫描建立中…";
+        g_indexMsg = TR("索引随扫描建立中…", "Building file index during scan…");
     } else {
-        g_indexMsg = "索引建立失败（不影响扫描）";
+        g_indexMsg = TR("索引建立失败（不影响扫描）", "File index failed (scan unaffected)");
     }
     long long pendingCommits = 0;
     long long rootId = 0;
@@ -1300,11 +1314,11 @@ static void ScanWorker(std::string root) {
         bool interrupted = g_stopReq.load();
         if (db::EndBulk(root, interrupted)) {
             g_indexMsg = interrupted
-                ? "索引只建了一部分，下次会重来"
-                : ("索引已就绪 · " + std::to_string((long long)g_entries.size()) + " 目录 + "
-                   + std::to_string(g_fileCount.load()) + " 文件");
+                ? TR("索引只建了一部分，下次会重来", "File index partially built; it will retry next time")
+                : (TR("索引已就绪 · ", "File index ready · ") + std::to_string((long long)g_entries.size()) + TR(" 目录 + ", " folders + ")
+                   + std::to_string(g_fileCount.load()) + TR(" 文件", " files"));
         } else {
-            g_indexMsg = "索引换名失败（可能有另一个窗口在用）";
+            g_indexMsg = TR("索引换名失败（可能有另一个窗口在用）", "Failed to rename index (possibly in use by another window)");
         }
     }
 
@@ -1348,7 +1362,7 @@ static void RequestDetectCancel() {
 static void DetectWorker(int gen, std::shared_ptr<std::atomic<bool>> cancel) {
     if (g_detectGen.load() != gen) return;
     g_detecting = true;
-    SetDetectMsg("正在检查可清理项…");
+    SetDetectMsg(TR("正在检查可清理项…", "Checking cleanable items…"));
     try {
         // g_rules 只在 WinMain 里构造一次。这里绝不能重建 vector：
         // 界面里的 Finding.rule 全部指向它的元素，重建会让指针悬空。
@@ -1380,7 +1394,7 @@ static void DetectWorker(int gen, std::shared_ptr<std::atomic<bool>> cancel) {
         }
         if (g_detectGen.load() == gen) ClearDetectMsg();
     } catch (...) {
-        if (g_detectGen.load() == gen) SetDetectMsg("检查失败");
+        if (g_detectGen.load() == gen) SetDetectMsg(TR("检查失败", "Check failed"));
     }
     if (g_detectGen.load() == gen) g_detecting = false;
 }
@@ -1481,14 +1495,14 @@ static void StartClean() {
     auto paths = CollectCleanPaths();
     if (paths.empty()) {
         g_lastCleanMsg = g_cleanOutOfScope > 0
-            ? "选中项都不在当前扫描范围内，已全部跳过（先扫描它所在的目录）"
-            : "没有可删除的项（可能都不在当前扫描范围内）";
+            ? TR("选中项都不在当前扫描范围内，已全部跳过（先扫描它所在的目录）", "None of the selected items are in the scanned range; all skipped (scan their folder first)")
+            : TR("没有可删除的项（可能都不在当前扫描范围内）", "Nothing to delete (items may be outside the scanned range)");
         return;
     }
     if (g_cleanOutOfScope > 0) {
         // 但这句会被"已清理"覆盖，所以真正的说明放在收尾里
-        g_lastCleanMsg = "已跳过 " + std::to_string(g_cleanOutOfScope) +
-                         " 项范围外的路径，只删当前扫描范围内的";
+        g_lastCleanMsg = TR("已跳过 ", "Skipped ") + std::to_string(g_cleanOutOfScope) +
+                         TR(" 项范围外的路径，只删当前扫描范围内的", " item(s) outside the scanned range; only in-range items are deleted");
     }
     g_cleanFreed = 0;
     g_cleanErrors = 0;
@@ -1624,7 +1638,7 @@ static void GatherChildren(int parent, std::vector<Blk>& out, size_t keep = 0) {
         for (size_t i = keep; i < out.size(); ++i) rest += out[i].size;
         out.resize(keep);
         Blk more;
-        more.name = "（其余 " + std::to_string(restCount) + " 项）";
+        more.name = TR("（其余 ", " (plus ") + std::to_string(restCount) + TR(" 项）", " more)");
         more.size = rest;
         more.idx = -1;
         more.path = PathOf(parent);   // 右键用父目录的菜单
@@ -1657,7 +1671,7 @@ static void GatherLiveChildren(int parent, std::vector<Blk>& out,
         for (size_t i = keep; i < out.size(); ++i) rest += out[i].size;
         out.resize(keep);
         Blk more;
-        more.name = "（其余 " + std::to_string(restCount) + " 项）";
+        more.name = TR("（其余 ", " (plus ") + std::to_string(restCount) + TR(" 项）", " more)");
         more.size = rest;
         more.idx = -1;
         more.path = parentItem->path;   // 右键用父目录的菜单
@@ -1755,7 +1769,7 @@ static void ApplyKeep(std::vector<Blk>& out, size_t keep, int parent) {
     for (size_t i = keep; i < out.size(); ++i) rest += out[i].size;
     out.resize(keep);
     Blk more;
-    more.name = "（其余 " + std::to_string(restCount) + " 项）";
+    more.name = TR("（其余 ", " (plus ") + std::to_string(restCount) + TR(" 项）", " more)");
     more.size = rest;
     more.idx = -1;
     more.path = PathOf(parent);
@@ -2111,9 +2125,9 @@ static void DrawTreemapImpl(ImDrawList* dl, const std::vector<Blk>& blocks,
                 dl->AddRect(a, c, ThemeColor(g_ui.accent), 4.0f, 0, 2.0f);
                 std::string sz = FormatBytes(b.size);
                 if (b.isRest)
-                    ImGui::SetTooltip("%s\n共 %s\n点击展开并查看列表", b.name.c_str(), sz.c_str());
+                    ImGui::SetTooltip(TR("%s\n共 %s\n点击展开并查看列表", "%s\n%s total\nClick to expand and view the list"), b.name.c_str(), sz.c_str());
                 else if (b.isFile)
-                    ImGui::SetTooltip("%s\n%s\n点击在资源管理器中显示", b.name.c_str(), sz.c_str());
+                    ImGui::SetTooltip(TR("%s\n%s\n点击在资源管理器中显示", "%s\n%s\nClick to show in Explorer"), b.name.c_str(), sz.c_str());
                 else
                     ImGui::SetTooltip("%s\n%s", b.name.c_str(), sz.c_str());
             }
@@ -2141,7 +2155,7 @@ static void RenderTreemap() {
             path = WideToUtf8(g_livePathW);
         }
         if (snap.empty()) {
-            const char* hint = "正在扫描…";
+            const char* hint = TR("正在扫描…", "Scanning…");
             ImVec2 sz = ImGui::CalcTextSize(hint);
             dl->AddText(ImVec2(canvasPos.x + (canvasSize.x - sz.x) * 0.5f,
                                canvasPos.y + canvasSize.y * 0.5f),
@@ -2152,7 +2166,7 @@ static void RenderTreemap() {
         // 顶层同样聚合：AppData\Local 有 135 个子目录时，不该在图上画 135 条碎条
         GatherLiveChildren(0, blocks, &snap, g_expandRestParent == 0 ? 0 : 8);
         if (blocks.empty()) {
-            const char* hint = "正在扫描…";
+            const char* hint = TR("正在扫描…", "Scanning…");
             ImVec2 sz = ImGui::CalcTextSize(hint);
             dl->AddText(ImVec2(canvasPos.x + (canvasSize.x - sz.x) * 0.5f,
                                canvasPos.y + canvasSize.y * 0.5f),
@@ -2172,11 +2186,11 @@ static void RenderTreemap() {
         float cx = canvasPos.x + canvasSize.x * 0.5f;
         float cy = canvasPos.y + canvasSize.y * 0.42f;
 
-        const char* title = "先选一个位置";
+        const char* title = TR("先选一个位置", "Pick a location first");
         ImVec2 tsz = ImGui::CalcTextSize(title);
         dl->AddText(ImVec2(cx - tsz.x * 0.5f, cy), ThemeColor(g_ui.text), title);
 
-        const char* sub = "上面选磁盘、粘贴路径，或点「浏览...」挑文件夹，然后点「扫描」";
+        const char* sub = TR("上面选磁盘、粘贴路径，或点「浏览...」挑文件夹，然后点「扫描」", "Pick a disk or paste a path above (or click Browse...), then click Scan");
         ImVec2 ssz = ImGui::CalcTextSize(sub);
         dl->AddText(ImVec2(cx - ssz.x * 0.5f, cy + 28), ThemeColor(g_ui.textDim), sub);
 
@@ -2185,7 +2199,7 @@ static void RenderTreemap() {
         ImGui::PushStyleColor(ImGuiCol_Button, g_ui.accent);
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, g_ui.accentHover);
         ImGui::PushStyleColor(ImGuiCol_Text, g_ui.accentText);
-        if (ImGui::Button("开始扫描", btnSize)) StartScan(g_pathBuf);
+        if (ImGui::Button(TR("开始扫描", "Start a scan"), btnSize)) StartScan(g_pathBuf);
         ImGui::PopStyleColor(3);
         return;
     }
@@ -2193,7 +2207,7 @@ static void RenderTreemap() {
     std::vector<Blk> blocks;
     GatherViewChildren(blocks, g_expandRestParent == g_current ? 0 : 8);
     if (blocks.empty()) {
-        const char* hint = "这个目录下没有可显示的子项";
+        const char* hint = TR("这个目录下没有可显示的子项", "No displayable items in this folder");
         ImVec2 sz = ImGui::CalcTextSize(hint);
         dl->AddText(ImVec2(canvasPos.x + (canvasSize.x - sz.x) * 0.5f,
                            canvasPos.y + canvasSize.y * 0.5f),
@@ -2267,13 +2281,16 @@ static void DoSearch(const SearchJob& job, SearchOut& out) {
             if (job.allRoots) {
                 out.noIndex = content::IndexSnapshot().empty();
                 if (out.noIndex) {
-                    out.msg = "还没有任何内容索引：先在右栏点「建立内容索引」";
+                    out.msg = TR("还没有任何内容索引：先在右栏点「建立内容索引」", "No content index yet: click \"Build content index\" in the right panel");
                     return;
                 }
             } else {
                 out.noIndex = true;
-                out.msg = "「" + job.root + "」还没有内容索引：右栏点「建立内容索引」，"
-                          "或把范围切到「所有已索引」";
+                out.msg = "\" " + job.root +
+                          TR("」还没有内容索引：右栏点「建立内容索引」，"
+                             "或把范围切到「所有已索引」",
+                             "\" has no content index: click \"Build content index\" in the right panel, "
+                             "or switch the scope to \"All indexed\"");
                 return;
             }
         }
@@ -2281,8 +2298,8 @@ static void DoSearch(const SearchJob& job, SearchOut& out) {
         if (job.allRoots) {
             out.hits = content::SearchAll(q, 400, &g_sAbort);
             out.msg = out.hits.empty()
-                ? "所有已建索引的目录里都没有匹配「" + job.query + "」的内容"
-                : "已在全部索引里搜到 " + std::to_string((int)out.hits.size()) + " 条";
+                ? TR("所有已建索引的目录里都没有匹配「", "No content matches \"") + job.query + TR("」的内容", "\" in any indexed folder")
+                : TR("已在全部索引里搜到 ", "Found ") + std::to_string((int)out.hits.size()) + TR(" 条", " result(s) across all indexes");
         } else {
             out.hits = content::Search(job.root, q, 400, &g_sAbort);
         }
@@ -2293,11 +2310,11 @@ static void DoSearch(const SearchJob& job, SearchOut& out) {
     if (job.allRoots) {
         out.hits = db::SearchAll(job.query, 400, &g_sAbort);
         if (out.hits.empty())
-            out.msg = "所有已建索引的目录里都没有文件名包含「" + job.query + "」的项";
+            out.msg = TR("所有已建索引的目录里都没有文件名包含「", "No file name contains \"") + job.query + TR("」的项", "\" in any indexed folder");
     } else {
         const std::string indexPath = db::IndexPathFor(job.root);
         if (GetFileAttributesW(Utf8ToWide(indexPath).c_str()) == INVALID_FILE_ATTRIBUTES) {
-            out.msg = "「" + job.root + "」还没扫描过，没有文件名索引";
+            out.msg = "「" + job.root + TR("」还没扫描过，没有文件名索引", "\" has never been scanned; no file-name index");
             return;
         }
         out.hits = db::SearchIn(indexPath, job.query, 400, &g_sAbort);
@@ -2344,7 +2361,7 @@ static void RunSearchNow(const std::string& query) {
     // 扫描线程正在用小 sqlite 连接写索引；这时读到的可能是半成品，
     // 而且 index_*.db 正在被 .building 换名覆盖。
     if (g_scanning.load()) {
-        g_lastCleanMsg = "扫描进行中，索引正在重建，等扫描结束后再搜索";
+        g_lastCleanMsg = TR("扫描进行中，索引正在重建，等扫描结束后再搜索", "Scan in progress; index rebuilding — search again after it finishes");
         return;
     }
     g_searchQuery = query;
@@ -2794,9 +2811,9 @@ static void StartContentIndex() {
 // 范围切换：当前扫描目录 / 所有建过索引的目录。
 // 这是"换个文件夹就搜不到"的正解 —— 索引还在，只是要看哪一份。
 static void DrawSearchScopeSwitch() {
-    static const char* kScopes[] = {"当前目录", "所有已索引"};
+    const char*kScopes[] = {TR("当前目录", "Current folder"), TR("所有已索引", "All indexed")};
     ImGui::PushFont(g_fontSmall);
-    ImGui::TextDisabled("范围");
+    ImGui::TextDisabled(TR("范围", "Scope"));
     ImGui::PopFont();
     ImGui::SameLine(0, 8);
     const int cur = g_searchAllRoots ? 1 : 0;
@@ -2823,11 +2840,11 @@ static void DrawIndexManager() {
     uint64_t total = 0;
     for (const auto& i : list) total += i.bytes;
     char head[128];
-    snprintf(head, sizeof head, "索引管理 · %d 份 · %s", (int)list.size(),
+    snprintf(head, sizeof head, TR("索引管理 · %d 份 · %s", "Index manager · %d database(s) · %s"), (int)list.size(),
              FormatBytes(total).c_str());
     if (!ImGui::CollapsingHeader(head)) return;
     if (list.empty()) {
-        ImGui::TextDisabled("还没有任何内容索引。");
+        ImGui::TextDisabled(TR("还没有任何内容索引。", "No content index yet."));
         return;
     }
 
@@ -2839,17 +2856,17 @@ static void DrawIndexManager() {
         ImGui::TextUnformatted(idx.root.c_str());
         ImGui::SameLine();
         char meta[160];
-        snprintf(meta, sizeof meta, "  %lld 个文档 · %s%s%s", (long long)idx.docs,
+        snprintf(meta, sizeof meta, TR("  %lld 个文档 · %s%s%s", "  %lld docs · %s%s%s"), (long long)idx.docs,
                  FormatBytes(idx.bytes).c_str(),
-                 idx.partial ? " · 未建完" : "", idx.stale ? " · 需重建" : "");
+                 idx.partial ? TR(" · 未建完", " · partial") : "", idx.stale ? TR(" · 需重建", " · rebuild needed") : "");
         ImGui::TextDisabled("%s", meta);
         ImGui::SameLine();
         // 建索引时删库会把 SQLite 连接从底下抽掉，直接禁用
         const bool busy = g_contentBusy.load();
         if (busy) ImGui::BeginDisabled();
-        if (GhostButton("删除", ImVec2(48, 22))) {
+        if (GhostButton(TR("删除", "Delete"), ImVec2(48, 22))) {
             if (content::DeleteIndexFile(idx.dbPath)) {
-                g_lastCleanMsg = "已删除索引：" + idx.root;
+                g_lastCleanMsg = TR("已删除索引：", "Deleted index: ") + idx.root;
                 g_extListDirty = true;
                 content::InvalidateIndexes();   // 下一帧重读，别把删掉的还列着
             }
@@ -2892,21 +2909,21 @@ static void DrawContentSearchTab() {
 
         // 阶段标题 + 剩余时间（同一行，右边对齐）
         ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted(pass == 0 ? "① 清点文件" : "② 抽取正文");
+        ImGui::TextUnformatted(pass == 0 ? TR("① 清点文件", "① Counting files") : TR("② 抽取正文", "② Extracting text"));
         ImGui::SameLine();
         {
             const float avail = ImGui::GetContentRegionAvail().x;
-            const float tw = ImGui::CalcTextSize("约剩 -- 分 -- 秒").x;
+            const float tw = ImGui::CalcTextSize(TR("约剩 -- 分 -- 秒", "~--m --s left")).x;
             if (avail > tw) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + avail - tw);
             if (pass == 1 && total > 0 && done > 1 && elapsed > 1.0) {
                 const int remain = (int)((double)(total - done) * elapsed / (double)done);
                 if (remain > 3600)
-                    snprintf(eta, sizeof eta, "约剩 %d 时 %02d 分", remain / 3600, (remain / 60) % 60);
+                    snprintf(eta, sizeof eta, TR("约剩 %d 时 %02d 分", "~%dh %02dm left"), remain / 3600, (remain / 60) % 60);
                 else
-                    snprintf(eta, sizeof eta, "约剩 %d 分 %02d 秒", remain / 60, remain % 60);
+                    snprintf(eta, sizeof eta, TR("约剩 %d 分 %02d 秒", "~%dm %02ds left"), remain / 60, remain % 60);
                 ImGui::TextDisabled("%s", eta);
             } else {
-                ImGui::TextDisabled(pass == 0 ? "统计可抽正文的文件" : "");
+                ImGui::TextDisabled(pass == 0 ? TR("统计可抽正文的文件", "Counting extractable files") : "");
             }
         }
 
@@ -2924,10 +2941,10 @@ static void DrawContentSearchTab() {
         ImGui::Dummy(ImVec2(0, 2));
         ImGui::PushFont(g_fontSmall, 0.0f);
         if (pass == 1 && total > 0) {
-            ImGui::TextDisabled("已处理 %d / %d     新抽取 %d · 复用 %d",
+            ImGui::TextDisabled(TR("已处理 %d / %d     新抽取 %d · 复用 %d", "Processed %d / %d     new %d · reused %d"),
                                 done, total, fresh, reused);
         } else {
-            ImGui::TextDisabled("已清点 %d 个候选     已抽正文 %d 个", total, fresh);
+            ImGui::TextDisabled(TR("已清点 %d 个候选     已抽正文 %d 个", "Counted %d candidates     extracted %d"), total, fresh);
         }
         ImGui::PopFont();
 
@@ -2951,7 +2968,7 @@ static void DrawContentSearchTab() {
             if (!recent.empty()) {
                 ImGui::Dummy(ImVec2(0, 8));
                 ImGui::PushFont(g_fontSmall, 0.0f);
-                ImGui::TextDisabled("最近抽取");
+                ImGui::TextDisabled(TR("最近抽取", "Recently extracted"));
                 const float rowW = ImGui::GetContentRegionAvail().x;
                 const float x0 = ImGui::GetCursorPosX();
                 // 按剩余高度决定列几行，把这面板的空白用起来
@@ -2978,10 +2995,10 @@ static void DrawContentSearchTab() {
         }
 
         ImGui::Dummy(ImVec2(0, 6));
-        if (GhostButton("停止", ImVec2(64, 26))) g_contentCancel = true;
+        if (GhostButton(TR("停止", "Stop"), ImVec2(64, 26))) g_contentCancel = true;
         ImGui::SameLine();
         ImGui::PushFont(g_fontSmall, 0.0f);
-        ImGui::TextDisabled("停下的部分会保留，下次点「增量更新」接着做");
+        ImGui::TextDisabled(TR("停下的部分会保留，下次点「增量更新」接着做", "Finished parts are kept; \"Update\" resumes next time"));
         ImGui::PopFont();
         return;
     }
@@ -2995,7 +3012,7 @@ static void DrawContentSearchTab() {
     // 用户在没索引的情况下搜过东西：把原因摆在他面前，而不是只显示"0 条"
     if (g_contentNoIndex) {
         ImGui::PushStyleColor(ImGuiCol_Text, ThemeColor(g_ui.warning));
-        ImGui::TextWrapped("「%s」还没有内容索引，所以刚才那次搜索什么也没返回。",
+        ImGui::TextWrapped(TR("「%s」还没有内容索引，所以刚才那次搜索什么也没返回。", "\"%s\" has no content index, so the search returned nothing."),
                            root.c_str());
         ImGui::PopStyleColor();
         ImGui::Dummy(ImVec2(0, 2));
@@ -3004,16 +3021,18 @@ static void DrawContentSearchTab() {
     // 这份清单走缓存：以前每帧 ListIndexes()（0.7 秒），界面直接僵住
     const auto idxList = content::IndexSnapshot();
     if (!hasHere && !(g_searchAllRoots && !idxList.empty())) {
-        ImGui::TextDisabled(g_searchAllRoots ? "还没有任何内容索引。"
-                                              : "当前目录还没有内容索引。");
-        ImGui::TextDisabled("只抽文本/代码、Office、PDF、图纸、三维模型；"
-                            "建一次，之后按大小和时间增量更新。");
+        ImGui::TextDisabled(g_searchAllRoots ? TR("还没有任何内容索引。", "No content index yet.")
+                                              : TR("当前目录还没有内容索引。", "The current folder has no content index yet."));
+        ImGui::TextDisabled(TR("只抽文本/代码、Office、PDF、图纸、三维模型；"
+                               "建一次，之后按大小和时间增量更新。",
+                               "Extracts text/code, Office, PDF, drawings, 3D models; "
+                               "build once, then incremental updates by size and mtime."));
         ImGui::Dummy(ImVec2(0, 6));
         const bool blocked = g_scanning.load();
         if (blocked) ImGui::BeginDisabled();
-        if (PrimaryButton("建立内容索引", ImVec2(0, 30))) StartContentIndex();
+        if (PrimaryButton(TR("建立内容索引", "Build content index"), ImVec2(0, 30))) StartContentIndex();
         if (blocked) ImGui::EndDisabled();
-        if (blocked) ImGui::TextDisabled("扫描进行中，等扫描结束后再建。");
+        if (blocked) ImGui::TextDisabled(TR("扫描进行中，等扫描结束后再建。", "Scan in progress; wait for it to finish."));
         std::string err = content::LastError();
         if (!err.empty()) ImGui::TextDisabled("%s", err.c_str());
 
@@ -3026,8 +3045,10 @@ static void DrawContentSearchTab() {
             if (miss > 0) {
                 ImGui::Dummy(ImVec2(0, 4));
                 ImGui::PushStyleColor(ImGuiCol_Text, ThemeColor(g_ui.textDim));
-                ImGui::TextWrapped("当前缺 %d 项可选依赖：PDF/DWG/OCR 里对应格式搜不到，"
-                                   "其余格式不受影响（详见 USAGE.md）。", miss);
+                ImGui::TextWrapped(TR("当前缺 %d 项可选依赖：PDF/DWG/OCR 里对应格式搜不到，"
+                                      "其余格式不受影响（详见 USAGE.md）。",
+                                      "Missing %d optional dependency(ies): the matching formats in PDF/DWG/OCR are not searchable, "
+                                      "other formats unaffected (see USAGE.md)."), miss);
                 ImGui::PopStyleColor();
             }
         }
@@ -3048,7 +3069,7 @@ static void DrawContentSearchTab() {
         ImGui::PopStyleColor();
     }
     if (g_searchQuery.empty()) {
-        ImGui::TextDisabled("内容索引就绪。在上面搜索框输入关键词即可搜正文。");
+        ImGui::TextDisabled(TR("内容索引就绪。在上面搜索框输入关键词即可搜正文。", "Content index ready. Type keywords above to search inside files."));
         // 解释"为什么只有这么点文件"：全盘扫描数 vs 可抽正文数
         {
             const int scanned = (int)g_fileCount.load();
@@ -3056,7 +3077,7 @@ static void DrawContentSearchTab() {
             if (scanned > 0 && cand > 0)
             {
                 ImGui::PushStyleColor(ImGuiCol_Text, ThemeColor(g_ui.textDim));
-                ImGui::TextWrapped("扫描 %d 个文件 → 可抽正文 %d 个（其余是依赖目录、不支持的格式、未开 OCR 的图片）",
+                ImGui::TextWrapped(TR("扫描 %d 个文件 → 可抽正文 %d 个（其余是依赖目录、不支持的格式、未开 OCR 的图片）", "Scanned %d files → %d extractable (rest: dependency folders, unsupported formats, images without OCR)"),
                                    scanned, cand);
                 ImGui::PopStyleColor();
             }
@@ -3064,38 +3085,38 @@ static void DrawContentSearchTab() {
         ImGui::Dummy(ImVec2(0, 2));
         {
             ImGui::PushStyleColor(ImGuiCol_Text, ThemeColor(g_ui.textDim));
-            ImGui::TextWrapped("语法：词A 词B（同时含）· A OR B · -排除 · ext:pdf · name:报告 · size:>10m · after:2024-06");
+            ImGui::TextWrapped(TR("语法：词A 词B（同时含）· A OR B · -排除 · ext:pdf · name:报告 · size:>10m · after:2024-06", "Syntax: wordA wordB (AND) · A OR B · -exclude · ext:pdf · name:report · size:>10m · after:2024-06"));
             ImGui::PopStyleColor();
         }
         if (lastFresh > 0 || lastReused > 0)
-            ImGui::TextDisabled("本次：新抽取 %d 个，复用上次结果 %d 个。", lastFresh, lastReused);
-        if (GhostButton("增量更新", ImVec2(0, 26))) StartContentIndex();
+            ImGui::TextDisabled(TR("本次：新抽取 %d 个，复用上次结果 %d 个。", "This run: %d newly extracted, %d reused."), lastFresh, lastReused);
+        if (GhostButton(TR("增量更新", "Update"), ImVec2(0, 26))) StartContentIndex();
         if (!extract::PdfReady())
-            ImGui::TextDisabled("提示：同目录放一个 pdfium.dll 才能搜 PDF 正文。");
+            ImGui::TextDisabled(TR("提示：同目录放一个 pdfium.dll 才能搜 PDF 正文。", "Tip: put pdfium.dll next to the exe to search PDF text."));
         if (!extract::DwgReady())
-            ImGui::TextDisabled("提示：要搜 .dwg 需要 dwg2dxf.exe + libredwg-0.dll 或 ODA File Converter。");
+            ImGui::TextDisabled(TR("提示：要搜 .dwg 需要 dwg2dxf.exe + libredwg-0.dll 或 ODA File Converter。", "Tip: searching .dwg needs dwg2dxf.exe + libredwg-0.dll or ODA File Converter."));
         if (!extract::LegacyReady())
-            ImGui::TextDisabled("提示：.doc/.ppt/.xls 走原生解析；装 catdoc/LibreOffice 对复杂文件更稳。");
+            ImGui::TextDisabled(TR("提示：.doc/.ppt/.xls 走原生解析；装 catdoc/LibreOffice 对复杂文件更稳。", "Tip: .doc/.ppt/.xls use built-in parsing; catdoc/LibreOffice helps with complex files."));
         if (!extract::ArchiveReady())
-            ImGui::TextDisabled("提示：.7z/.rar 需要安装 7-Zip 或 WinRAR。");
+            ImGui::TextDisabled(TR("提示：.7z/.rar 需要安装 7-Zip 或 WinRAR。", "Tip: searching .7z/.rar requires 7-Zip or WinRAR."));
         {
             static bool ocrDirty = false;
             const bool ocrOn = extract::OcrReady();
             char ocrLbl[64];
-            snprintf(ocrLbl, sizeof ocrLbl, "OCR 图片：%s", ocrOn ? "开" : "关");
+            snprintf(ocrLbl, sizeof ocrLbl, TR("OCR 图片：%s", "OCR images: %s"), ocrOn ? TR("开", "On") : TR("关", "Off"));
             if (GhostButton(ocrLbl, ImVec2(0, 26))) {
                 extract::SetOcrEnabled(!ocrOn);
                 ocrDirty = true;      // 开关变了要整库重建，否则旧的"抽空"记录不会重试
             }
             ImGui::SameLine();
             if (ocrDirty && content::HasIndex(g_rootPath))
-                ImGui::TextDisabled("设置已改变 —— 点下面的「增量更新」重新索引。");
+                ImGui::TextDisabled(TR("设置已改变 —— 点下面的「增量更新」重新索引。", "Setting changed — click \"Update\" below to re-index."));
             if (!extract::OcrAvailable())
-                ImGui::TextDisabled("（扫描件 PDF 需装 Tesseract-OCR 才会自动识别）");
+                ImGui::TextDisabled(TR("（扫描件 PDF 需装 Tesseract-OCR 才会自动识别）", "(scanned PDFs need Tesseract-OCR for auto recognition)"));
             else
             {
                 ImGui::PushStyleColor(ImGuiCol_Text, ThemeColor(g_ui.textDim));
-                ImGui::TextWrapped("扫描件 PDF 自动识别（每次最多 120 页）；这个开关只管图片。");
+                ImGui::TextWrapped(TR("扫描件 PDF 自动识别（每次最多 120 页）；这个开关只管图片。", "Scanned PDFs auto-recognize (up to 120 pages per run); this toggle is for images only."));
                 ImGui::PopStyleColor();
             }
         }
@@ -3104,17 +3125,17 @@ static void DrawContentSearchTab() {
         return;
     }
     if (g_searchBusy.load()) {
-        ImGui::TextDisabled("正在搜索…");
+        ImGui::TextDisabled(TR("正在搜索…", "Searching…"));
         ImGui::ProgressBar(-1.0f * (float)ImGui::GetTime(), ImVec2(-1, 6), "");
-        ImGui::TextDisabled(g_searchAllRoots ? "逐个查所有已建索引的目录，先出结果先算完"
-                                             : "正在查当前目录的内容索引");
+        ImGui::TextDisabled(g_searchAllRoots ? TR("逐个查所有已建索引的目录，先出结果先算完", "Querying every indexed folder; results stream in as each finishes")
+                                             : TR("正在查当前目录的内容索引", "Querying content index of the current folder"));
         return;
     }
     if (g_hits.empty()) {
-        ImGui::TextDisabled("没有文件内容匹配「%s」。", g_searchQuery.c_str());
+        ImGui::TextDisabled(TR("没有文件内容匹配「%s」。", "No file content matches \"%s\"."), g_searchQuery.c_str());
         if (!g_searchAllRoots) {
             ImGui::PushStyleColor(ImGuiCol_Text, ThemeColor(g_ui.textDim));
-            ImGui::TextWrapped("想连之前扫过的其他目录一起搜，点上面的「所有已索引」。");
+            ImGui::TextWrapped(TR("想连之前扫过的其他目录一起搜，点上面的「所有已索引」。", "To also search previously scanned folders, switch to \"All indexed\" above."));
             ImGui::PopStyleColor();
         }
         return;
@@ -3122,10 +3143,10 @@ static void DrawContentSearchTab() {
     {
         int outCount = 0;
         for (const auto& h : g_hits) if (!InCurrentDir(h.path)) ++outCount;
-        ImGui::TextDisabled("内容命中 %d 项（按相关度排序，勾选可加入待清理）", (int)g_hits.size());
+        ImGui::TextDisabled(TR("内容命中 %d 项（按相关度排序，勾选可加入待清理）", "%d content hits (by relevance; check items to add to cleanup)"), (int)g_hits.size());
         if (outCount > 0) {
             ImGui::PushStyleColor(ImGuiCol_Text, ThemeColor(g_ui.textDim));
-            ImGui::TextWrapped("%d 项在扫描范围外（带锁，不可勾选），扫它所在目录后可清理",
+            ImGui::TextWrapped(TR("%d 项在扫描范围外（带锁，不可勾选），扫它所在目录后可清理", "%d item(s) outside scanned range (locked, not selectable); scan their folder to clean them"),
                                outCount);
             ImGui::PopStyleColor();
         }
@@ -3135,8 +3156,8 @@ static void DrawContentSearchTab() {
         bool was = g_hitSelected.count(hit.path) > 0;
         bool now = was;
         std::string sz = FormatBytes(hit.size);
-        RowCard(hit.path.c_str(), hit.name, sz, &now, inScope ? "" : "范围外",
-                inScope ? hit.path : hit.path + "\n不在当前扫描范围内，勾选与清理会被跳过",
+        RowCard(hit.path.c_str(), hit.name, sz, &now, inScope ? "" : TR("范围外", "Out of scope"),
+                inScope ? hit.path : hit.path + TR("\n不在当前扫描范围内，勾选与清理会被跳过", "\nOutside the scanned range; selection and cleanup are skipped"),
                 hit.snippet.empty() ? ShortParent(hit.path) : hit.snippet, inScope);
         if (!inScope) continue;
         if (now != was) {
@@ -3148,7 +3169,7 @@ static void DrawContentSearchTab() {
 
 static void DrawRightPanel() {
     // ---- 标签行：三个页签在左，两个批量按钮贴右
-    static const char* tabLabels[] = {"推荐清理", "深度清理", "检索结果"};
+    const char*tabLabels[] = {TR("推荐清理", "Recommended"), TR("深度清理", "Deep clean"), TR("检索结果", "Search results")};
     int nextTab = TabBar("tabs", tabLabels, 3, g_mode);
     if (nextTab != g_mode) g_mode = nextTab;
 
@@ -3169,7 +3190,7 @@ static void DrawRightPanel() {
         }
     }
     if (!hasSafe) ImGui::BeginDisabled();
-    if (GhostButton("全选安全项", ImVec2(72, 26))) {
+    if (GhostButton(TR("全选安全项", "Select safe items"), ImVec2(72, 26))) {
         std::lock_guard<std::mutex> lk(g_findMutex);
         for (auto& f : g_findings) {
             if (!f.rule || f.rule->risk != rules::SAFE || f.size == 0) continue;
@@ -3178,7 +3199,7 @@ static void DrawRightPanel() {
         }
     }
     ImGui::SameLine(0, 6);
-    if (GhostButton("取消全选", ImVec2(66, 26))) g_selected.clear();
+    if (GhostButton(TR("取消全选", "Deselect all"), ImVec2(66, 26))) g_selected.clear();
     if (!hasSafe) ImGui::EndDisabled();
     ImGui::Dummy(ImVec2(0, 2));
 
@@ -3217,25 +3238,27 @@ static void DrawRightPanel() {
 
         if (rows.empty()) {
             if (!g_detecting.load() && g_scanSeconds == 0 && !g_scanning.load()) {
-                EmptyState("还没有检查", "扫描一个目录后，这里会列出当前目录下可清理的缓存项。");
+                EmptyState(TR("还没有检查", "Not checked yet"), TR("扫描一个目录后，这里会列出当前目录下可清理的缓存项。", "After scanning a folder, cleanable cache items are listed here."));
             } else if (!g_detecting.load()) {
                 char body[256];
                 if (g_currentFileTotal > 0)
                     snprintf(body, sizeof body,
-                             "缓存规则只覆盖系统和应用的缓存目录。当前目录下还有 %d 个直接文件，"
-                             "可以在「深度清理」里看。",
+                             TR("缓存规则只覆盖系统和应用的缓存目录。当前目录下还有 %d 个直接文件，"
+                                 "可以在「深度清理」里看。",
+                                 "Cache rules only cover system/app cache folders. This folder also has %d loose files; "
+                                 "see them under \"Deep clean\"."),
                              g_currentFileTotal);
                 else
-                    snprintf(body, sizeof body, "缓存规则只覆盖系统和应用的缓存目录。");
-                EmptyState("这里没有可清理的缓存项", body);
+                    snprintf(body, sizeof body, TR("缓存规则只覆盖系统和应用的缓存目录。", "Cache rules only cover system/app cache folders."));
+                EmptyState(TR("这里没有可清理的缓存项", "No cleanable cache items here"), body);
             }
         } else {
             for (auto& f : rows) {
                 bool was = g_selected.count(f.rule->id) > 0;
                 bool now = was;
                 std::string sz = FormatBytes(f.size);
-                const char* badge = f.timedOut                  ? "超时"
-                                    : f.rule->risk != rules::SAFE ? "需确认"
+                const char* badge = f.timedOut                  ? TR("超时", "Timed out")
+                                    : f.rule->risk != rules::SAFE ? TR("需确认", "Confirm needed")
                                                                   : "";
                 RowCard(f.rule->id.c_str(), f.rule->name, sz, &now, badge,
                         f.existing.empty() ? f.rule->why : f.existing[0]);
@@ -3248,16 +3271,16 @@ static void DrawRightPanel() {
     } else if (g_mode == 1) {
         if (g_scanning.load()) {
             // 扫描线程正在重建 g_entries，这里直接读会越界
-            EmptyState("正在扫描", "扫完这里会列出当前目录下的每一项。");
+            EmptyState(TR("正在扫描", "Scanning"), TR("扫完这里会列出当前目录下的每一项。", "After the scan, every item in this folder is listed here."));
         } else if (g_current < 0 || g_entries.empty()) {
-            EmptyState("还没有内容", "先在上面选一个目录扫描，这里会按大小列出子项。");
+            EmptyState(TR("还没有内容", "Nothing here yet"), TR("先在上面选一个目录扫描，这里会按大小列出子项。", "Scan a folder above first; its children will be listed by size here."));
         } else {
             std::vector<Blk> children;
             GatherViewChildren(children, 0);
             int dirCount = 0;
             for (auto& c : children) if (!c.isFile) ++dirCount;
             std::string head = FormatBytes(g_entries[g_current].size);
-            ImGui::TextDisabled("%d 个子目录 · %d 个文件 · 合计 %s（勾选可加入待清理）",
+            ImGui::TextDisabled(TR("%d 个子目录 · %d 个文件 · 合计 %s（勾选可加入待清理）", "%d folders · %d files · %s total (check items to add to cleanup)"),
                                 dirCount, g_currentFileTotal, head.c_str());
             for (auto& c : children) {
                 std::string path = c.isFile ? c.path : PathOf(c.idx);
@@ -3278,7 +3301,7 @@ static void DrawRightPanel() {
                 }
             }
             if (g_currentFilesTruncated) {
-                ImGui::TextDisabled("…文件较多，仅列出最大的 %d 个（共 %d 个）",
+                ImGui::TextDisabled(TR("…文件较多，仅列出最大的 %d 个（共 %d 个）", "…Too many files; showing the largest %d of %d"),
                                     (int)g_currentFiles.size(), g_currentFileTotal);
             }
         }
@@ -3287,24 +3310,24 @@ static void DrawRightPanel() {
     } else {
         DrawSearchScopeSwitch();
         if (g_searchBusy.load() && !g_searchQuery.empty()) {
-            ImGui::TextDisabled("正在搜索…");
+            ImGui::TextDisabled(TR("正在搜索…", "Searching…"));
             ImGui::ProgressBar(-1.0f * (float)ImGui::GetTime(), ImVec2(-1, 6), "");
-            ImGui::TextDisabled(g_searchAllRoots ? "逐个查所有已建索引的目录"
-                                                 : "正在查当前目录的文件名索引");
+            ImGui::TextDisabled(g_searchAllRoots ? TR("逐个查所有已建索引的目录", "Querying every indexed folder")
+                                                 : TR("正在查当前目录的文件名索引", "Querying file-name index of the current folder"));
         } else if (g_searchQuery.empty()) {
-            EmptyState("还没有搜索", "在上面搜索框输入文件名，回车或点搜索。Ctrl+F 可以直接跳过去。");
+            EmptyState(TR("还没有搜索", "No search yet"), TR("在上面搜索框输入文件名，回车或点搜索。Ctrl+F 可以直接跳过去。", "Type a file name above, press Enter or click Search. Ctrl+F jumps to the box."));
         } else if (g_hits.empty()) {
-            EmptyState("没有命中", g_searchAllRoots
-                       ? "所有已建索引的目录里都没有匹配的文件名。"
-                       : "换个关键词试试，或者把上面的范围切成「所有已索引」。");
+            EmptyState(TR("没有命中", "No matches"), g_searchAllRoots
+                       ? TR("所有已建索引的目录里都没有匹配的文件名。", "No file name matches in any indexed folder.")
+                       : TR("换个关键词试试，或者把上面的范围切成「所有已索引」。", "Try another keyword, or switch the scope above to \"All indexed\"."));
         } else {
             int outCount = 0;
             for (const auto& h : g_hits) if (!InCurrentDir(h.path)) ++outCount;
-            ImGui::TextDisabled("命中 %d 项（按大小排序，勾选可加入待清理）",
+            ImGui::TextDisabled(TR("命中 %d 项（按大小排序，勾选可加入待清理）", "%d hits (by size; check items to add to cleanup)"),
                                 (int)g_hits.size());
             if (outCount > 0) {
                 ImGui::PushStyleColor(ImGuiCol_Text, ThemeColor(g_ui.textDim));
-                ImGui::TextWrapped("%d 项在扫描范围外（带锁，不可勾选），扫它所在目录后可清理",
+                ImGui::TextWrapped(TR("%d 项在扫描范围外（带锁，不可勾选），扫它所在目录后可清理", "%d item(s) outside scanned range (locked, not selectable); scan their folder to clean them"),
                                    outCount);
                 ImGui::PopStyleColor();
             }
@@ -3314,8 +3337,8 @@ static void DrawRightPanel() {
                 bool now = was;
                 std::string sz = FormatBytes(hit.size);
                 // 标题用文件名；同名文件太多，用父路径末尾区分
-                RowCard(hit.path.c_str(), hit.name, sz, &now, inScope ? "" : "范围外",
-                        inScope ? hit.path : hit.path + "\n不在当前扫描范围内，勾选与清理会被跳过",
+                RowCard(hit.path.c_str(), hit.name, sz, &now, inScope ? "" : TR("范围外", "Out of scope"),
+                        inScope ? hit.path : hit.path + TR("\n不在当前扫描范围内，勾选与清理会被跳过", "\nOutside the scanned range; selection and cleanup are skipped"),
                         ShortParent(hit.path), inScope);
                 if (!inScope) continue;
                 if (now != was) {
@@ -3363,16 +3386,16 @@ static void DrawRightPanel() {
     ImGui::TextColored(selectedCount > 0 ? g_ui.text : g_ui.textDim, "%s", selSz.c_str());
     ImGui::SameLine();
     ImGui::PushFont(g_fontSmall, 0.0f);
-    ImGui::TextDisabled("%d 项", selectedCount);
+    ImGui::TextDisabled(TR("%d 项", "%d items"), selectedCount);
     ImGui::PopFont();
     ImGui::SameLine(std::max(180.0f, ImGui::GetWindowContentRegionMax().x - 104.0f));
 
     const bool canClean = selectedCount > 0 && !g_cleaning.load();
     if (!canClean) {
         ImGui::BeginDisabled();
-        GhostButton(g_cleaning.load() ? "清理中" : "清理选中项", ImVec2(100, 30));
+        GhostButton(g_cleaning.load() ? TR("清理中", "Cleaning…") : TR("清理选中项", "Clean selected items"), ImVec2(100, 30));
         ImGui::EndDisabled();
-    } else if (PrimaryButton(g_cleaning.load() ? "清理中" : "清理选中项", ImVec2(100, 30))) {
+    } else if (PrimaryButton(g_cleaning.load() ? TR("清理中", "Cleaning…") : TR("清理选中项", "Clean selected items"), ImVec2(100, 30))) {
         // 任何删除都要先弹窗确认 —— 这一步不可撤销，不给用户留反悔机会
         ImGui::OpenPopup("##confirmClean");
     }
@@ -3386,9 +3409,9 @@ static void DrawRightPanel() {
             fsnap = g_findings;
         }
         ImGui::Dummy(ImVec2(0, 2));
-        ImGui::TextUnformatted("确认删除这些内容");
+        ImGui::TextUnformatted(TR("确认删除这些内容", "Confirm deletion"));
         ImGui::Dummy(ImVec2(0, 2));
-        ImGui::TextDisabled("推荐清理 %d 项 · 深度勾选 %d 项 · 检索勾选 %d 项 · 合计 %s",
+        ImGui::TextDisabled(TR("推荐清理 %d 项 · 深度勾选 %d 项 · 检索勾选 %d 项 · 合计 %s", "Recommended %d · deep %d · search %d · total %s"),
                             (int)g_selected.size(), (int)g_deepSelected.size(),
                             (int)g_hitSelected.size(), selSz.c_str());
         ImGui::Dummy(ImVec2(0, 8));
@@ -3416,19 +3439,19 @@ static void DrawRightPanel() {
             ImGui::BulletText("%s", kv.first.c_str());
         }
         if (selectedCount > kMaxShown)
-            ImGui::TextDisabled("还有 %d 项未列出", selectedCount - kMaxShown);
+            ImGui::TextDisabled(TR("还有 %d 项未列出", "%d more not listed"), selectedCount - kMaxShown);
         ImGui::EndChild();
         ImGui::PopStyleColor(2);
         ImGui::Dummy(ImVec2(0, 12));
-        ImGui::TextColored(g_ui.danger, "直接删除，不进回收站，无法撤销。");
+        ImGui::TextColored(g_ui.danger, TR("直接删除，不进回收站，无法撤销。", "Files are deleted directly — not to Recycle Bin, unrecoverable."));
         ImGui::Dummy(ImVec2(0, 8));
 
         // 按钮右对齐：取消在左，确认在右（危险操作放最后）
         const float btnRow = ImGui::GetContentRegionMax().x - (92.0f + 8.0f + 104.0f);
         if (btnRow > 0) ImGui::SetCursorPosX(btnRow);
-        if (GhostButton("取消", ImVec2(92, 30))) ImGui::CloseCurrentPopup();
+        if (GhostButton(TR("取消", "Cancel"), ImVec2(92, 30))) ImGui::CloseCurrentPopup();
         ImGui::SameLine(0, 8);
-        if (DangerButton("确认删除", ImVec2(104, 30))) {
+        if (DangerButton(TR("确认删除", "Delete"), ImVec2(104, 30))) {
             StartClean();
             ImGui::CloseCurrentPopup();
         }
@@ -3460,7 +3483,7 @@ static void StartScan(const std::string& root) {
     // 但别默默掐掉 —— 用户会看到进度条突然消失，以为程序坏了。
     if (g_contentBusy.load()) {
         g_contentCancel = true;
-        g_lastCleanMsg = "开始扫描，内容索引已停止（已完成的部分保留，稍后可「增量更新」）";
+        g_lastCleanMsg = TR("开始扫描，内容索引已停止（已完成的部分保留，稍后可「增量更新」）", "Scan started; content indexing stopped (finished parts kept; \"Update\" resumes later)");
     }
     g_contentNoIndex = false;
     // 新扫描一开始，旧检测的结果全部作废（旧线程即使还在跑也写不进界面）
@@ -3515,7 +3538,8 @@ static void DrawLogo() {
     const float box = 34.0f;
     const float h = 38.0f;
     const char* word = "SpaceSift";
-    const char* sub = "磁盘空间分析  v" SPACESIFT_VERSION;
+    char sub[64];
+    snprintf(sub, sizeof sub, "%s%s", TR("磁盘空间分析  v", "Disk Space Analyzer  v"), SPACESIFT_VERSION);
     float logoW = box + 11.0f + ImGui::CalcTextSize(word).x;
 
     ImGui::SetCursorScreenPos(p);
@@ -3561,20 +3585,20 @@ static void DrawStatusStrip() {
             snprintf(left, sizeof left, "%.0f%%   %s / %s", pct * 100.0f,
                      FormatBytes(scanned).c_str(), FormatBytes(denom).c_str());
         else
-            snprintf(left, sizeof left, "已扫 %s · %lld 文件",
+            snprintf(left, sizeof left, TR("已扫 %s · %lld 文件", "Scanned %s · %lld files"),
                      FormatBytes(scanned).c_str(), (long long)g_fileCount.load());
     } else if (g_scanSeconds > 0) {
-        snprintf(left, sizeof left, "%lld 文件 · %s · %.1f 秒",
+        snprintf(left, sizeof left, TR("%lld 文件 · %s · %.1f 秒", "%lld files · %s · %.1f s"),
                  (long long)g_fileCount.load(), FormatBytes(scanned).c_str(), g_scanSeconds);
     } else {
-        snprintf(left, sizeof left, "就绪 · 选一个位置开始");
+        snprintf(left, sizeof left, TR("就绪 · 选一个位置开始", "Ready · pick a location to start"));
     }
 
     std::string right;
     ImVec4 rightColor = g_ui.textFaint;
     bool warn = false;
     if (g_cleaning.load()) {
-        right = "正在清理 " + std::to_string(g_cleanDone.load()) + "/" +
+        right = TR("正在清理 ", "Cleaning ") + std::to_string(g_cleanDone.load()) + "/" +
                 std::to_string(g_cleanTotal.load());
         rightColor = g_ui.warning;
         warn = true;
@@ -3596,17 +3620,17 @@ static void DrawStatusStrip() {
             cur = WideToUtf8(g_livePathW);
         }
         if (cur.size() > 58) cur = "…" + cur.substr(cur.size() - 57);
-        right = "扫描中 · " + std::to_string(g_visited.load()) + " 目录 · " + cur;
+        right = TR("扫描中 · ", "Scanning · ") + std::to_string(g_visited.load()) + TR(" 目录 · ", " folders · ") + cur;
         rightColor = g_ui.textFaint;
     } else if (g_contentBusy.load()) {
-        right = "建立内容索引 · 已写入 " + std::to_string(content::g_parsed.load()) + " 个";
+        right = TR("建立内容索引 · 已写入 ", "Building content index · ") + std::to_string(content::g_parsed.load()) + TR(" 个", " written");
         rightColor = g_ui.warning;
         warn = true;
     } else if (g_detecting.load()) {
         right = GetDetectMsg();
         rightColor = g_ui.textFaint;
     } else if (g_scanSeconds > 0) {
-        right = "扫描完成";
+        right = TR("扫描完成", "Scan complete");
         rightColor = g_ui.textFaint;
     }
 
@@ -3679,8 +3703,8 @@ static void DrawTopBar() {
                     IM_COL32(255, 255, 255, g_darkTheme ? 70 : 180), 1.0f);
     }
     const float padY = std::max(2.0f, (kCtrlH - ImGui::GetTextLineHeight() * 1.0f) * 0.5f);
-    static const char* kModes[] = {"文件名", "内容"};
-    static const char* kThemes[] = {"亮色", "暗色"};
+    const char*kModes[] = {TR("文件名", "File name"), TR("内容", "Content")};
+    const char*kThemes[] = {TR("亮色", "Light"), TR("暗色", "Dark")};
     const float modeW = SegmentedWidth(kModes, 2);
     const float themeW = SegmentedWidth(kThemes, 2);
     const float E = ImGui::GetWindowContentRegionMax().x;   // 内容区右边界
@@ -3691,7 +3715,10 @@ static void DrawTopBar() {
     if (searchW > 300.0f) searchW = 300.0f;
     const float searchBtnW = 52.0f;
     float blockW = modeW + 8.0f + searchW + 8.0f + searchBtnW;
-    const float themeX = E - themeW;
+    // themeX 右边还要给语言胶囊（34px + 8 间距）留位；再留 6px 边距，
+    // 否则正好顶到内容区右界，ImGui 会把按钮挤到下一行
+    const float langW = 34.0f + 8.0f + 6.0f;
+    const float themeX = E - themeW - langW;
     const float blockRight = themeX - 24.0f;
     float modeX = blockRight - blockW;
 
@@ -3712,7 +3739,7 @@ static void DrawTopBar() {
     ImGui::PushStyleColor(ImGuiCol_Border, g_ui.borderStrong);
     ImGui::SetNextItemWidth(118);
     const char* driveLabel = (g_driveIdx >= 0 && g_driveIdx < (int)g_drives.size())
-                                 ? g_drives[g_driveIdx].c_str() : "选择磁盘";
+                                 ? g_drives[g_driveIdx].c_str() : TR("选择磁盘", "Select disk");
     if (ImGui::BeginCombo("##drive", driveLabel)) {
         for (int i = 0; i < (int)g_drives.size(); ++i) {
             if (ImGui::Selectable(g_drives[i].c_str(), g_driveIdx == i)) {
@@ -3744,7 +3771,7 @@ static void DrawTopBar() {
     ImGui::PopStyleVar(2);
     ImGui::SameLine(0, 8);
 
-    if (GhostButton("浏览", ImVec2(browseW, kCtrlH))) {
+    if (GhostButton(TR("浏览", "Browse"), ImVec2(browseW, kCtrlH))) {
         std::string picked;
         if (BrowseFolder(picked)) {
             snprintf(g_pathBuf, sizeof g_pathBuf, "%s", picked.c_str());
@@ -3754,12 +3781,12 @@ static void DrawTopBar() {
     ImGui::SameLine(0, 8);
 
     if (scanningNow) {
-        if (GhostButton(g_paused.load() ? "继续" : "暂停", ImVec2(pauseW, kCtrlH)))
+        if (GhostButton(g_paused.load() ? TR("继续", "Resume") : TR("暂停", "Pause"), ImVec2(pauseW, kCtrlH)))
             g_paused = !g_paused.load();
         ImGui::SameLine(0, 6);
-        if (DangerButton(g_stopReq.load() ? "结束中" : "结束", ImVec2(stopW, kCtrlH))) g_stopReq = true;
+        if (DangerButton(g_stopReq.load() ? TR("结束中", "Stopping") : TR("结束", "Stop"), ImVec2(stopW, kCtrlH))) g_stopReq = true;
     } else {
-        if (PrimaryButton("扫描", ImVec2(scanW, kCtrlH))) StartScan(g_pathBuf);
+        if (PrimaryButton(TR("扫描", "Scan"), ImVec2(scanW, kCtrlH))) StartScan(g_pathBuf);
     }
 
     if (!scanningNow) ToolbarDivider(kCtrlH - 10);
@@ -3790,7 +3817,7 @@ static void DrawTopBar() {
     ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
     ImGui::PushStyleColor(ImGuiCol_Border, g_ui.borderStrong);
     const bool go = ImGui::InputTextWithHint("##search",
-                                             g_searchMode ? "搜索文件内容" : "搜索文件名",
+                                             g_searchMode ? TR("搜索文件内容", "Search file content") : TR("搜索文件名", "Search file names"),
                                              g_searchBuf, sizeof g_searchBuf,
                                              ImGuiInputTextFlags_EnterReturnsTrue);
     ImGui::PopStyleColor();
@@ -3798,15 +3825,32 @@ static void DrawTopBar() {
 
     bool doSearch = go;
     ImGui::SameLine(0, 8);
-    if (GhostButton("搜索", ImVec2(searchBtnW, kCtrlH))) doSearch = true;
+    if (GhostButton(TR("搜索", "Search"), ImVec2(searchBtnW, kCtrlH))) doSearch = true;
     if (doSearch) {
         RunSearchNow(g_searchBuf);
         g_mode = g_searchBuf[0] ? 2 : 0;
     }
 
+    // Segmented 结尾会把光标挪到自己下一行。行 Y 必须在 SameLine **之后**取
+    // （每个控件提交后 ImGui 都会把光标掉到下一行），否则按钮会落到第二行。
     ImGui::SameLine(std::max(ImGui::GetCursorPosX() + 12.0f, themeX));
+    const ImVec2 segPos = ImGui::GetCursorScreenPos();
     const int themeIdx = Segmented("theme", kThemes, 2, g_darkTheme ? 1 : 0, kCtrlH, nullptr, true);
     if ((themeIdx == 1) != g_darkTheme) SetTheme(themeIdx == 1);
+
+    // 语言胶囊：显示要切到的语言。中文界面显示 EN，英文界面显示 中。
+    // 切换即时生效（TR 每帧求值），写回 settings.ini，下次启动沿用。
+    ImGui::SetCursorScreenPos(ImVec2(themeX + themeW + 8.0f, segPos.y));
+    if (GhostButton(i18n::g_lang == i18n::Lang_ZH ? "EN" : "中", ImVec2(34, kCtrlH))) {
+        i18n::g_lang = (i18n::g_lang == i18n::Lang_ZH) ? i18n::Lang_EN : i18n::Lang_ZH;
+        SaveLangSetting();
+        // 标题栏在启动时定死，切语言要同步改
+        if (g_mainHwnd)
+            SetWindowTextW(g_mainHwnd,
+                           i18n::g_lang == i18n::Lang_EN
+                               ? L"SpaceSift Native " SPACESIFT_VERSION_W L" · Disk Space Analyzer"
+                               : L"SpaceSift Native " SPACESIFT_VERSION_W L" · 磁盘空间分析");
+    }
 }
 
 static void DrawUI() {
@@ -3833,11 +3877,11 @@ static void DrawUI() {
     // 清理线程结束后统一收尾（g_selected 等状态只能在 UI 线程改）
     if (g_cleanFinish.exchange(false)) {
         int errors = g_cleanErrors.load();
-        std::string msg = "已清理 " + FormatBytes(g_cleanFreed.load());
-        if (errors) msg += "（" + std::to_string(errors) + " 个文件被占用，已跳过）";
+        std::string msg = TR("已清理 ", "Cleaned ") + FormatBytes(g_cleanFreed.load());
+        if (errors) msg += "（" + std::to_string(errors) + TR(" 个文件被占用，已跳过）", " file(s) in use, skipped)");
         if (g_cleanOutOfScope > 0)
-            msg += "；另有 " + std::to_string(g_cleanOutOfScope) + " 项在扫描范围外，未处理";
-        msg += " · 重新检测中，方块图下次扫描后更新";
+            msg += TR("；另有 ", "; plus ") + std::to_string(g_cleanOutOfScope) + TR(" 项在扫描范围外，未处理", " item(s) out of scope, untouched");
+        msg += TR(" · 重新检测中，方块图下次扫描后更新", " · re-checking; treemap updates on next scan");
         g_lastCleanMsg = msg;
         g_selected.clear();
         g_deepSelected.clear();
@@ -3871,7 +3915,7 @@ static void DrawUI() {
             ImGui::SetCursorPosX(rowX);
 
             ImGui::PushFont(g_fontSmall);
-            ImGui::TextDisabled("筛选");
+            ImGui::TextDisabled(TR("筛选", "Filter"));
             ImGui::PopFont();
             ImGui::SameLine(0, 10);
 
@@ -3911,7 +3955,7 @@ static void DrawUI() {
                 return clicked;
             };
 
-            if (chip("全部", g_extFilter.empty())) {
+            if (chip(TR("全部", "All"), g_extFilter.empty())) {
                 g_extFilter.clear();
                 RunSearchNow(g_searchBuf);
             }
@@ -3942,19 +3986,19 @@ static void DrawUI() {
         ImGui::PopFont();
 
         // 导航放右边：路径左对齐、操作右对齐，视线不用来回跳
-        const float linksW = ImGui::CalcTextSize("上一层").x + 8.0f + 10.0f +
-                             ImGui::CalcTextSize("回到根").x + 8.0f;
+        const float linksW = ImGui::CalcTextSize(TR("上一层", "Up one level")).x + 8.0f + 10.0f +
+                             ImGui::CalcTextSize(TR("回到根", "Back to root")).x + 8.0f;
         const float lx = ImGui::GetWindowContentRegionMax().x - linksW;
         if (lx > ImGui::GetCursorPosX() + 12.0f) ImGui::SameLine(lx);
         else ImGui::SameLine(0, 12);
 
         if (!canGo) ImGui::BeginDisabled();
-        if (TextLink("上一层")) {
+        if (TextLink(TR("上一层", "Up one level"))) {
             g_current = g_entries[g_current].parent;
             g_expandRestParent = -1;
         }
         ImGui::SameLine(0, 10);
-        if (TextLink("回到根")) {
+        if (TextLink(TR("回到根", "Back to root"))) {
             g_current = 0;
             g_expandRestParent = -1;
         }
@@ -4051,7 +4095,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
                       nullptr, nullptr, L"SpaceSiftNative", appIcon};
     RegisterClassExW(&wc);
 
-    HWND hwnd = CreateWindowW(wc.lpszClassName, L"SpaceSift Native " SPACESIFT_VERSION_W L" · 磁盘空间分析", WS_OVERLAPPEDWINDOW,
+    HWND hwnd = CreateWindowW(wc.lpszClassName,
+                              i18n::g_lang == i18n::Lang_EN
+                                  ? L"SpaceSift Native " SPACESIFT_VERSION_W L" · Disk Space Analyzer"
+                                  : L"SpaceSift Native " SPACESIFT_VERSION_W L" · 磁盘空间分析",
+                              WS_OVERLAPPEDWINDOW,
                               80, 80, 1320, 880, nullptr, nullptr, wc.hInstance, nullptr);
     g_mainHwnd = hwnd;
     // COM 要在读 shell 目录（SHGetFolderPathW）之前初始化
@@ -4078,6 +4126,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
         }
     }
     g_darkTheme = LoadThemeSetting();
+    i18n::g_lang = LoadLangSetting() ? i18n::Lang_EN : i18n::Lang_ZH;
     g_searchAllRoots = LoadSearchScopeSetting();
     ApplyDarkTitleBar();
     if (!CreateDeviceD3D(hwnd)) {

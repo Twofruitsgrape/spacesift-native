@@ -1,4 +1,5 @@
 #include "content.h"
+#include "i18n.h"
 
 #include <windows.h>
 
@@ -483,7 +484,7 @@ std::vector<IndexInfo> ListIndexes() {
         } else if (db) {
             sqlite3_close(db);
         }
-        if (info.root.empty()) info.root = "(未知)";
+        if (info.root.empty()) info.root = TR("(未知)", "(unknown)");
         out.push_back(std::move(info));
     } while (FindNextFileW(h, &fd));
     FindClose(h);
@@ -620,7 +621,7 @@ void Build(const std::string& root, const std::atomic<bool>& cancel) {
                 sqlite3_close(probe);
             }
             if (hasDocs && oldVer != version) {
-                SetNotice("抽取参数已升级，旧正文索引作废，本次重新抽取");
+                SetNotice(TR("抽取参数已升级，旧正文索引作废，本次重新抽取", "Extractor upgraded: old text index invalidated, rebuilding"));
                 DeleteFileW(w.c_str());
                 DeleteFileW((w + L"-wal").c_str());
                 DeleteFileW((w + L"-shm").c_str());
@@ -634,7 +635,7 @@ void Build(const std::string& root, const std::atomic<bool>& cancel) {
 
     sqlite3* db = nullptr;
     if (sqlite3_open(dbPath.c_str(), &db) != SQLITE_OK) {
-        SetError("无法创建内容索引库");
+        SetError(TR("无法创建内容索引库", "Failed to create content index database"));
         if (db) sqlite3_close(db);
         g_busy = false;
         return;
@@ -686,7 +687,7 @@ void Build(const std::string& root, const std::atomic<bool>& cancel) {
         g_seen = (int)(total > INT32_MAX ? INT32_MAX : total);
     }
     if (cancel.load()) {
-        SetNotice("索引已停止，已完成的部分保留");
+        SetNotice(TR("索引已停止，已完成的部分保留", "Indexing stopped; finished parts are kept"));
         Exec(db, "COMMIT;");
     }
 
@@ -795,7 +796,7 @@ void Build(const std::string& root, const std::atomic<bool>& cancel) {
     Exec(db, "PRAGMA wal_checkpoint(TRUNCATE);");
     sqlite3_close(db);
 
-    if (cancel.load()) SetNotice("索引已停止，已完成的部分保留，下次点「增量更新」接着做");
+    if (cancel.load()) SetNotice(TR("索引已停止，已完成的部分保留，下次点「增量更新」接着做", "Indexing stopped; finished parts kept. \"Update\" resumes next time"));
     InvalidateIndexes();   // 新库/新体积要反映到「索引管理」和范围判断里
     g_busy = false;
 }
@@ -1346,7 +1347,7 @@ std::vector<db::Hit> SearchAll(const std::string& query, int limit,
     std::unordered_map<std::string, size_t> byPath;   // 小写路径 → merged 下标
     for (const IndexInfo& idx : IndexSnapshot()) {
         if (cancel && cancel->load()) break;         // 关窗口/换关键词：别再把剩下的库查完
-        if (idx.root.empty() || idx.root == "(未知)") continue;
+        if (idx.root.empty() || idx.root == TR("(未知)", "(unknown)")) continue;
         std::vector<db::Hit> part = Search(idx.root, query, limit, cancel);
         for (auto& h : part) {
             std::string key = h.path;

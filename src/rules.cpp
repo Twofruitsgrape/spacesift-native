@@ -1,4 +1,5 @@
 #include "rules.h"
+#include "i18n.h"
 
 #include <windows.h>
 
@@ -82,66 +83,66 @@ std::vector<Rule> All() {
     };
 
     // ---- 可直接清理（用户目录下的缓存，普通权限就能读能删）
-    add("user-temp", "用户临时文件",
-        "程序和安装包留下的临时文件，重启后大多已经没用。", SAFE,
+    add("user-temp", TR("用户临时文件", "User temp files"),
+        TR("程序和安装包留下的临时文件，重启后大多已经没用。", "Temp files left by apps and installers; mostly useless after a reboot."), SAFE,
         {"%TEMP%"});
-    add("thumbnail-cache", "缩略图缓存",
-        "资源管理器的缩略图数据库，会自动重建。", SAFE,
+    add("thumbnail-cache", TR("缩略图缓存", "Thumbnail cache"),
+        TR("资源管理器的缩略图数据库，会自动重建。", "Explorer's thumbnail database; rebuilt automatically."), SAFE,
         {"%LOCALAPPDATA%\\Microsoft\\Windows\\Explorer\\thumbcache_*.db"}, true);
-    add("crash-dumps", "崩溃转储",
-        "程序崩溃时写下的转储文件，排查完就没用了。", SAFE,
+    add("crash-dumps", TR("崩溃转储", "Crash dumps"),
+        TR("程序崩溃时写下的转储文件，排查完就没用了。", "Dump files written on crashes; useless once investigated."), SAFE,
         {"%LOCALAPPDATA%\\CrashDumps"});
-    add("pip-cache", "pip 缓存",
-        "下载过的 wheel 包缓存，重装时会重新下载。", SAFE,
+    add("pip-cache", TR("pip 缓存", "pip cache"),
+        TR("下载过的 wheel 包缓存，重装时会重新下载。", "Downloaded wheel cache; re-downloaded when reinstalling."), SAFE,
         {"%LOCALAPPDATA%\\pip\\Cache"});
-    add("uv-cache", "uv 缓存",
-        "uv 的包缓存，可用 uv cache clean 重建。", SAFE,
+    add("uv-cache", TR("uv 缓存", "uv cache"),
+        TR("uv 的包缓存，可用 uv cache clean 重建。", "uv package cache; rebuild with \"uv cache clean\"."), SAFE,
         {"%LOCALAPPDATA%\\uv\\cache"});
-    add("npm-cache", "npm 缓存",
-        "npm 的本地包缓存。", SAFE,
+    add("npm-cache", TR("npm 缓存", "npm cache"),
+        TR("npm 的本地包缓存。", "npm local package cache."), SAFE,
         {"%LOCALAPPDATA%\\npm-cache"});
-    add("browser-cache-chrome", "Chrome 缓存",
-        "网页缓存，删除后首次访问会稍慢，不影响登录状态。", SAFE,
+    add("browser-cache-chrome", TR("Chrome 缓存", "Chrome cache"),
+        TR("网页缓存，删除后首次访问会稍慢，不影响登录状态。", "Web cache; first visits get slower, logins unaffected."), SAFE,
         {"%LOCALAPPDATA%\\Google\\Chrome\\User Data\\Default\\Cache",
          "%LOCALAPPDATA%\\Google\\Chrome\\User Data\\Default\\Code Cache",
          "%LOCALAPPDATA%\\Google\\Chrome\\User Data\\Default\\GPUCache"});
-    add("browser-cache-edge", "Edge 缓存",
-        "网页缓存，删除后首次访问会稍慢。", SAFE,
+    add("browser-cache-edge", TR("Edge 缓存", "Edge cache"),
+        TR("网页缓存，删除后首次访问会稍慢。", "Web cache; first visits get slower."), SAFE,
         {"%LOCALAPPDATA%\\Microsoft\\Edge\\User Data\\Default\\Cache",
          "%LOCALAPPDATA%\\Microsoft\\Edge\\User Data\\Default\\Code Cache",
          "%LOCALAPPDATA%\\Microsoft\\Edge\\User Data\\Default\\GPUCache"});
-    add("electron-cache", "Electron 应用缓存",
-        "VS Code、Cursor、Discord 等应用的缓存与日志。", SAFE,
+    add("electron-cache", TR("Electron 应用缓存", "Electron app caches"),
+        TR("VS Code、Cursor、Discord 等应用的缓存与日志。", "Caches and logs of VS Code, Cursor, Discord, etc."), SAFE,
         {"%APPDATA%\\Code\\Cache", "%APPDATA%\\Code\\CachedData",
          "%APPDATA%\\Code\\logs", "%APPDATA%\\discord\\Cache"});
-    add("recycle-bin", "回收站",
-        "清空回收站。删掉的文件就找不回来了。", SAFE,
+    add("recycle-bin", TR("回收站", "Recycle Bin"),
+        TR("清空回收站。删掉的文件就找不回来了。", "Empty the Recycle Bin. Deleted files cannot be recovered."), SAFE,
         {"%SYSTEMDRIVE%\\$Recycle.Bin"});
 
     // ---- 需要管理员权限的系统目录（检测和删除都可能失败，单独标注）
-    add("windows-temp", "Windows 临时目录",
-        "系统与安装程序共用的临时目录，需要管理员权限。", SAFE,
+    add("windows-temp", TR("Windows 临时目录", "Windows temp folder"),
+        TR("系统与安装程序共用的临时目录，需要管理员权限。", "Shared system temp folder; requires admin rights."), SAFE,
         {"%WINDIR%\\Temp"}, false, true);
-    add("update-download", "Windows 更新下载缓存",
-        "已安装更新的安装包缓存，需要管理员权限。", SAFE,
+    add("update-download", TR("Windows 更新下载缓存", "Windows Update download cache"),
+        TR("已安装更新的安装包缓存，需要管理员权限。", "Installer cache of installed updates; requires admin rights."), SAFE,
         {"%WINDIR%\\SoftwareDistribution\\Download"}, false, true);
-    add("wer-reports", "Windows 错误报告",
-        "错误报告队列，需要管理员权限。", SAFE,
+    add("wer-reports", TR("Windows 错误报告", "Windows Error Reporting"),
+        TR("错误报告队列，需要管理员权限。", "Error report queue; requires admin rights."), SAFE,
         {"%PROGRAMDATA%\\Microsoft\\Windows\\WER"}, false, true);
 
     // ---- 确认后清理
-    add("chrome-ondevice-model", "Chrome 端侧 AI 模型",
-        "Chrome 内置的端侧 AI 模型，每份约 4 GB，多个浏览器副本各存一份。删了下次用到会重新下载。",
+    add("chrome-ondevice-model", TR("Chrome 端侧 AI 模型", "Chrome on-device AI models"),
+        TR("Chrome 内置的端侧 AI 模型，每份约 4 GB，多个浏览器副本各存一份。删了下次用到会重新下载。", "Chrome built-in on-device AI models, ~4 GB each, one copy per browser profile. Re-downloaded when needed."),
         CAUTION, {"%LOCALAPPDATA%\\Google\\Chrome\\User Data\\OptGuideOnDeviceModel",
                   "%LOCALAPPDATA%\\Google\\Chrome Beta\\User Data\\OptGuideOnDeviceModel"});
-    add("pnpm-store", "pnpm 全局存储",
-        "pnpm 用硬链接共享这个存储，删了已装项目的依赖会一起坏。", CAUTION,
+    add("pnpm-store", TR("pnpm 全局存储", "pnpm global store"),
+        TR("pnpm 用硬链接共享这个存储，删了已装项目的依赖会一起坏。", "pnpm hard-links this store; deleting it breaks installed projects."), CAUTION,
         {"%LOCALAPPDATA%\\pnpm\\store"});
-    add("winsxs-backup", "组件存储备份 (WinSxS)",
-        "微软建议用 DISM 而不是手删；手删会破坏组件存储。", CAUTION,
+    add("winsxs-backup", TR("组件存储备份 (WinSxS)", "Component store backup (WinSxS)"),
+        TR("微软建议用 DISM 而不是手删；手删会破坏组件存储。", "Microsoft recommends DISM; manual deletion corrupts the component store."), CAUTION,
         {"%WINDIR%\\WinSxS\\Backup"}, false, true);
-    add("windows-logs", "Windows 日志",
-        "系统日志文件，排查问题时会用到。", CAUTION,
+    add("windows-logs", TR("Windows 日志", "Windows logs"),
+        TR("系统日志文件，排查问题时会用到。", "System log files; useful when troubleshooting."), CAUTION,
         {"%WINDIR%\\Logs"}, false, true);
 
     return out;

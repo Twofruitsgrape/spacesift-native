@@ -12,8 +12,9 @@ third_party/imgui/docs/
 third_party/imgui/examples/
 third_party/imgui/misc/
 
-# 本地调试与截图
+# 本地调试与截图（docs/ 里的 README 用图例外）
 *.png
+!docs/*.png
 *.log
 TASK_*.md
 verify.py

@@ -1,8 +1,28 @@
 # SpaceSift Native
 
-A disk space analyzer and cleaner. Native C++ + ImGui, single executable, no runtime to install.
+Disk space analyzer + **full-text content search**. Native C++ + ImGui, single executable, no runtime to install.
 
 [简体中文](README.md) | **English**
+
+Current version: **2.3.0** (shown in the title bar).
+
+![Demo](docs/demo.gif)
+
+| English UI | 中文界面 |
+|---|---|
+| ![English main](docs/en_main.png) | ![中文主界面](docs/zh_scan_done.png) |
+
+| Filename search | Content search (with snippets) |
+|---|---|
+| ![English content search](docs/en_content_search.png) | ![内容检索](docs/zh_content_search.png) |
+
+The UI supports **one-click Chinese/English switching** (the `EN / 中` pill in the top bar; takes effect instantly and the choice is remembered). Light theme:
+
+![Light theme](docs/en_main_light.png)
+
+## Download
+
+Grab `SpaceSift-2.3.0-portable.zip` (recommended, includes the optional PDF/DWG/OCR dependencies) or `SpaceSift-2.3.0-exe-only.zip` from the [Releases](https://github.com/Twofruitsgrape/spacesift-native/releases) page. Unzip and double-click `SpaceSift.exe` — or run `install.bat` for a per-user install with a desktop shortcut. Verify checksums against `SHA256SUMS.txt`.
 
 ## Features
 
@@ -15,7 +35,7 @@ A disk space analyzer and cleaner. Native C++ + ImGui, single executable, no run
 - **Index manager** — see how much each index costs, how many documents it holds, delete it
 - **Confirmation** — every deletion first opens a dialog listing exactly what will go; nothing is deleted until you confirm, and it does not go to the Recycle Bin
 - **Safety** — only paths inside the scanned range are touched; hits outside it are shown with a lock and cannot be ticked; protected system directories are always skipped
-- Light/dark theme toggle, right-click menu (Open containing folder / Copy path / Scan from here)
+- **Chinese/English UI** — one click on the `EN / 中` pill in the top bar; light/dark theme toggle, right-click menu (Open containing folder / Copy path / Scan from here)
 
 ## Usage
 
@@ -36,7 +56,7 @@ Drive C, 3.39 M files / 436 GB: scan takes 38 s, peak memory 125 MB, executable 
 
 Windows 10 1803+ / Windows 11, 64-bit. Uses the DirectX 11 and UCRT components that ship with the OS; no extra runtime needed.
 
-> Seeing "Microsoft Edge WebView2 Runtime is missing"? That message comes from the **legacy 1.x** build (Python + WebView2 UI). Since 2.x the whole app is one native statically-linked exe — no WebView2, no runtime install. Grab the 2.2.1 package instead of old releases.
+> Seeing "Microsoft Edge WebView2 Runtime is missing"? That message comes from the **legacy 1.x** build (Python + WebView2 UI). Since 2.x the whole app is one native statically-linked exe — no WebView2, no runtime install. Grab a 2.3.0 package instead of old releases.
 
 ## Building from source
 
