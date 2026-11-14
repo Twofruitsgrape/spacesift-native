@@ -22,6 +22,10 @@
 |---|---|
 | ![亮色主题](docs/en_main_light.png) | ![English content search](docs/en_content_search.png) |
 
+内容检索的完整过程（建索引进度 → 带片段的命中结果）：
+
+![内容检索演示](docs/demo_content.gif)
+
 ## 下载
 
 到 [Releases](https://github.com/Twofruitsgrape/spacesift-native/releases) 页面：

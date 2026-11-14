@@ -20,6 +20,10 @@ The UI supports **one-click Chinese/English switching** (the `EN / 中` pill in 
 
 ![Light theme](docs/en_main_light.png)
 
+Content search end-to-end (index progress → results with snippets):
+
+![Content search demo](docs/demo_content.gif)
+
 ## Download
 
 Grab `SpaceSift-2.3.0-portable.zip` (recommended, includes the optional PDF/DWG/OCR dependencies) or `SpaceSift-2.3.0-exe-only.zip` from the [Releases](https://github.com/Twofruitsgrape/spacesift-native/releases) page. Unzip and double-click `SpaceSift.exe` — or run `install.bat` for a per-user install with a desktop shortcut. Verify checksums against `SHA256SUMS.txt`.
