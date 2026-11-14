@@ -37,7 +37,7 @@
 |---|---|---|
 | 文本/代码 | 60+ 后缀（txt/md/csv/log/json/xml/yml/ini/html/css + c/cpp/py/js/ts/rs/go/java…） | 直读 + 编码探测（UTF-8/GBK/UTF-16） |
 | Office | docx / docm / xlsx / xlsm / pptx / pptm / odt / ods / odp | 直读 OOXML |
-| 旧版 Office | **doc / ppt / xls** | 中文走 UTF-16LE 扫描（零依赖）；**英文需 catdoc/LibreOffice** |
+| 旧版 Office | **doc / ppt / xls** | 原生解析 OLE2（FIB / BIFF8 SST / PPT 文本流）+ UTF-16LE 兜底，**零依赖**；装 catdoc/LibreOffice 对复杂文件更稳 |
 | 电子书 | **epub** | zip + XHTML |
 | 邮件 | **eml / msg** | MIME 解码（base64/QP）/ UTF-16 扫描 |
 | PDF | 文本层 | pdfium |
@@ -64,14 +64,14 @@
 | DWG（更准） | ODA File Converter（自动探测注册表/Program Files） | — |
 | 扫描件 PDF 自动 OCR | Tesseract-OCR + 语言包放 `tessdata/` | 16.7 MB |
 | 图片 OCR（截图/照片） | 同上，另需勾选「OCR 图片」 | — |
-| 旧版 Office | catdoc 系列 或 LibreOffice（可选，没有也能读中文） | — |
+| 旧版 Office（增强） | catdoc 系列 或 LibreOffice（可选；不装也能读，装了更稳） | — |
 | rar / 7z | WinRAR 或 7-Zip（从注册表/Program Files 自动找） | — |
 
 主程序不链接任何 GPL 代码，全部走子进程调用。
 
 ## 五、实测性能
 
-### D:\毕少华（个人资料，3274 文件 / 46 GB）
+### 个人资料目录（3,274 文件 / 46 GB）
 
 | 指标 | 数值 |
 |---|---|
@@ -81,7 +81,7 @@
 | 索引库 | 64.4 MB（原始体积的 0.14%） |
 | 查询 | 精确词 2–10 ms，泛词 90–120 ms |
 
-### E:\Projects（代码库，16624 文件 / 135 GB）
+### 代码仓库目录（16,624 文件 / 135 GB）
 
 | 指标 | 数值 |
 |---|---|
@@ -118,17 +118,43 @@
 - **抽取参数升级会整库重建**：程序里 `extract_version` 一变，旧正文就作废（右栏会提示），
   这是为了保证"改过抽取逻辑之后不会继续用脏数据"
 
-## 七、命令行/脚本化（便于自动化测试）
+## 七、下载后第一件事：跑一次自检
+
+解压后双击 **`selftest.bat`**（或命令行 `SpaceSift.exe --selftest`）。它会在临时目录里
+**自己造 12 个样本文件**（txt / GBK / DXF / STEP / OBJ / docx / xlsx / pptx / zip 内层 /
+PDF / ABAQUS inp / 旧版 doc），然后：
+
+1. 逐格式抽正文并断言关键词能出来（PDF 缺 dll 会标 `[SKIP]` 而不是假装通过）
+2. 建一次内容索引，逐条搜关键词，验 `ext:` 过滤、无关词零命中
+3. 再建一次，验增量（文件没变必须 0 次重复抽取）
+4. 建两份索引，验跨目录检索（2.2.0 修的主问题）
+5. 写一份文件名索引，验"写入 → 查询 → 跨库合并"链路
+6. **删掉自己造的索引和临时文件**，不在你系统盘留垃圾
+
+输出最后一行是 `通过 N · 失败 M · 跳过 K`，退出码 0 = 全部通过。日志在
+`%TEMP%\SpaceSift-selftest-<pid>.log`。
+
+想顺便体检自己的目录：
 
 ```bat
-set SPACESIFT_ROOT=D:\图纸
+selftest.bat "D:\某个目录"
+```
+
+会真实建一份索引并列出候选数、抽取数、耗时、各后缀分布 —— 这就是"这个目录能不能被搜到正文"的答案。
+
+> 自检只读你的目录，不删不改；它删的只有自己造的东西。
+
+## 八、命令行/脚本化（便于自动化测试）
+
+```bat
+set SPACESIFT_ROOT=D:\某目录
 set SPACESIFT_MODE=content
 set SPACESIFT_CONTENT=1
 set SPACESIFT_SEARCH=法兰盘
 SpaceSift.exe
 ```
 
-## 八、体检报告工具（开发用）
+## 九、体检报告工具（开发用）
 
 ```
 build\report.exe            （目录用环境变量 REPORT_ROOT 传，避免中文被中转坏）

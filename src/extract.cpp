@@ -1678,7 +1678,10 @@ bool Supports(const std::string& ext) {
     // 下面这些靠外部依赖，没装就不列进来，免得全部标成“抽取失败”
     if (ext == ".pdf") return PdfReady();
     if (ext == ".dwg") return DwgReady();
-    if (ext == ".doc" || ext == ".ppt" || ext == ".xls") return LegacyReady();
+    // 旧版 Office 不门控外部工具：office.cpp 原生解析 OLE2（FIB / BIFF8 SST / PPT 文本流），
+    // 再加 UTF-16LE 兜底。以前这里写 LegacyReady()，结果是干净机器上
+    // .doc/.xls/.ppt 一个都不进索引 —— 和"原生解析"的说法自相矛盾。
+    if (ext == ".doc" || ext == ".ppt" || ext == ".xls") return true;
     if (ext == ".7z" || ext == ".rar") return ArchiveReady();
     if (ext == ".sldprt" || ext == ".sldasm" || ext == ".slddrw") return true;
     if (ext == ".mph") return true;   // COMSOL 模型（zip）

@@ -42,6 +42,7 @@
 #include "extract.h"
 #include "rules.h"
 #include "ime_win32.h"
+#include "selftest.h"
 #include "version.h"
 
 // ============================================================ 扫描结果
@@ -2690,7 +2691,7 @@ static void DrawContentSearchTab() {
         if (!extract::DwgReady())
             ImGui::TextDisabled("提示：要搜 .dwg 需要 dwg2dxf.exe + libredwg-0.dll 或 ODA File Converter。");
         if (!extract::LegacyReady())
-            ImGui::TextDisabled("提示：.doc/.ppt/.xls 需要 catdoc 系列或 LibreOffice。");
+            ImGui::TextDisabled("提示：.doc/.ppt/.xls 走原生解析；装 catdoc/LibreOffice 对复杂文件更稳。");
         if (!extract::ArchiveReady())
             ImGui::TextDisabled("提示：.7z/.rar 需要安装 7-Zip 或 WinRAR。");
         {
@@ -3578,6 +3579,23 @@ static void DrawUI() {
 // ============================================================ 入口
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
+    // 出厂自检：SpaceSift.exe --selftest [目录]
+    // 下载后第一件事就该是跑它 —— 不建窗口，造样本、抽正文、建索引、搜结果，
+    // 全程只在 %TEMP% 里写，跑完自己清理。
+    {
+        const std::wstring cl = GetCommandLineW();
+        if (cl.find(L"--selftest") != std::wstring::npos) {
+            int argc = 0;
+            LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+            const wchar_t* folder = nullptr;
+            for (int i = 1; argv && i < argc; ++i)
+                if (argv[i][0] != L'-') folder = argv[i];
+            const int rc = selftest::Run(folder);
+            if (argv) LocalFree(argv);
+            return rc;
+        }
+    }
+
     // 图标来自 app.rc 里嵌入的 1 号资源（assets/icon.ico）
     HICON appIcon = LoadIconW(hInstance, MAKEINTRESOURCEW(1));
     if (!appIcon) appIcon = LoadIconW(nullptr, MAKEINTRESOURCEW(32512));

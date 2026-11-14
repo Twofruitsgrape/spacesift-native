@@ -41,3 +41,6 @@ packaging/licenses/GPL-3.0.txt
 
 # Python 缓存
 __pycache__/
+
+# 本地工作区数据（记忆、缓存），不进仓库
+.workbuddy/

@@ -79,6 +79,9 @@ int main() {
     Check(extract::Supports(".dxf"), "支持 .dxf");
     Check(extract::Supports(".step") && extract::Supports(".stp"), "支持 .step/.stp");
     Check(extract::Supports(".dwg") == extract::DwgReady(), ".dwg 随转换器可用性启用/禁用");
+    // 旧版 Office 有原生解析（office.cpp）+ UTF-16 兜底，不该被外部工具门控
+    Check(extract::Supports(".doc") && extract::Supports(".xls") && extract::Supports(".ppt"),
+          "旧版 Office 无外部工具也参与索引（原生解析）");
     Check(extract::PdfReady(), "pdfium.dll 已加载（PDF 可检索）");
     Check(extract::Supports(".pdf"), "支持 .pdf");
 

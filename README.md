@@ -17,6 +17,25 @@
 
 两种都不写注册表，删除目录即卸载。
 
+### 下载后先跑一次自检
+
+解压 → 双击 **`selftest.bat`**。它会自己在临时目录造 12 个样本文件（txt/GBK/DXF/STEP/OBJ/
+docx/xlsx/pptx/zip 内层/PDF/ABAQUS/旧版 doc），逐格式抽正文、建索引、搜关键词、验增量和
+跨目录检索，**跑完把自己造的东西全删掉**，不碰你的文件。
+
+```
+通过 34 · 失败 0 · 跳过 0      ← 这个包可以正常使用
+```
+
+缺 `pdfium.dll` 时 PDF 那条会标 `[SKIP]` 而不是假装通过。想顺便体检自己的目录：
+
+```bat
+selftest.bat "D:\某个目录"
+```
+
+打包脚本 `pack_release.py` 在出包前还会做一道**出厂审计**：文件集合必须和白名单完全一致，
+且任何文件里出现本机用户名、`C:\Users\xxx`、索引库文件名就拒绝出包。
+
 ### 下载后提示「你的 Internet 安全设置阻止打开一个或多个文件」？
 
 这是 Windows 给**所有网络下载文件**打的 Mark-of-the-Web 标记，不是病毒警告，点「确定」即可。
@@ -113,7 +132,7 @@ Get-FileHash .\SpaceSift-2.0.5-portable.zip -Algorithm SHA256
 |---|---|
 | 文本 / 代码 | 60+ 后缀（txt md csv log json xml yml ini html css + c/cpp/py/js/ts/rs/go/java…），自动识别 UTF-8 / GBK / UTF-16 |
 | Office 新版 | docx docm xlsx xlsm pptx pptm odt ods odp |
-| **Office 旧版** | **doc / xls / ppt**（原生解析 OLE 复合文档，中文英文都能读） |
+| **Office 旧版** | **doc / xls / ppt**（原生解析 OLE2：FIB / BIFF8 SST / PPT 文本流 + UTF-16 兜底，**零依赖**） |
 | PDF | 文本层；**扫描件自动 OCR**（含坏文本层抢救） |
 | 图片 | png / jpg / bmp / tif（可选，需装 Tesseract） |
 | 电子书 | **epub** |
@@ -164,7 +183,7 @@ re:正则  或 /正则/   正则匹配（全表扫描，慢）
 | DWG | `dwg2dxf.exe` + `libredwg-0.dll`（便携包里已带，GPLv3） | 32 MB |
 | 扫描件/图片 OCR | Tesseract-OCR + `tessdata/`（便携包里已带语言包） | 17 MB |
 | rar / 7z | WinRAR 或 7-Zip（从注册表/Program Files 自动找） | — |
-| 旧版 Office 英文 | 不需要（原生解析）；复杂文件可选装 catdoc / LibreOffice | — |
+| 旧版 Office（增强） | 不需要（原生解析）；复杂文件可选装 catdoc / LibreOffice | — |
 
 ## 实测
 
@@ -181,7 +200,7 @@ C 盘 339 万文件 / 436 GB：扫描 38 秒，内存峰值 125 MB，exe 4 MB。
 
 | 语料 | 文档 | 2.1.x 索引库 | 2.2.0 索引库 |
 |---|---:|---:|---:|
-| `E:\Projects`（9,324 篇） | 9,324 | 116.6 MB | **78.3 MB** |
+| 代码仓库目录（9,324 篇） | 9,324 | 116.6 MB | **78.3 MB** |
 
 做法是**正文只存前 16 KB（做命中片段），倒排仍吃满 64 KB** —— 体积降三分之一，
 但"文档第 50 页出现的关键词"照样搜得到（召回不掉）。空出来的空间主要来自 `docs.text`
