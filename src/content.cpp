@@ -432,6 +432,7 @@ void ResetProgress() {
     g_parsed = 0;
     g_skipped = 0;
     g_passes = 0;
+    ClearRecent();   // 上一轮的文件名不该出现在这一轮的列表里
     { std::lock_guard<std::mutex> lk(g_mutex); g_curPath.clear(); g_lastError.clear(); g_lastNotice.clear(); }
 }
 
@@ -498,6 +499,34 @@ std::vector<IndexInfo> ListIndexes() {
 // ListIndexes() 逐个 sqlite3_open_v2 读 meta。实测 27 份库 0.74 秒。
 // 右栏判断"有没有别的目录建过索引"时每帧都要这个答案，直接调就是每帧冻 0.74 秒，
 // 表现出来就是"切到所有已索引，界面卡住不动了"。
+// 最近抽取的几个文件（进度面板里滚动显示）。
+// 只留极少量：用户要的是"它在动、在做什么"，不是完整日志。
+std::mutex            g_recentMx;
+std::vector<RecentFile> g_recent;
+
+static void PushRecent(const std::string& path, uint64_t size, bool ok) {
+    RecentFile rf;
+    const size_t slash = path.find_last_of('\\');
+    rf.name = (slash == std::string::npos) ? path : path.substr(slash + 1);
+    rf.path = path;
+    rf.size = size;
+    rf.ok = ok;
+    std::lock_guard<std::mutex> lk(g_recentMx);
+    g_recent.push_back(std::move(rf));
+    // 列表长度按面板高度来取，这里留够余量即可；超了成批丢，别每帧挪 vector
+    if (g_recent.size() > 48) g_recent.erase(g_recent.begin(), g_recent.begin() + 16);
+}
+
+std::vector<RecentFile> RecentFiles() {
+    std::lock_guard<std::mutex> lk(g_recentMx);
+    return g_recent;
+}
+
+void ClearRecent() {
+    std::lock_guard<std::mutex> lk(g_recentMx);
+    g_recent.clear();
+}
+
 std::mutex           g_idxMx;
 std::vector<IndexInfo> g_idxCache;
 bool                 g_idxDirty = true;
@@ -731,6 +760,7 @@ void Build(const std::string& root, const std::atomic<bool>& cancel) {
             }
         }
         g_parsed.fetch_add(1);
+        PushRecent(full, size, err == 0);
 
         // 分批提交，每 500 个放一次锁，UI 才不至于一直搜不到东西
         if (++sinceCommit >= 500) {

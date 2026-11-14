@@ -4,7 +4,7 @@
 
 **简体中文** | [English](README.en.md)
 
-当前版本 **2.2.1**（标题栏可见）。
+当前版本 **2.2.2**（标题栏可见）。
 
 ## 下载
 
@@ -12,8 +12,8 @@
 
 | 包 | 大小 | 说明 |
 |---|---|---|
-| **`SpaceSift-2.2.1-portable.zip`** | 22 MB | **推荐**。解压后双击 `SpaceSift.exe`，或运行 `install.bat` 一键安装（装到当前用户目录 + 建桌面快捷方式，不需要管理员） |
-| `SpaceSift-2.2.1-exe-only.zip` | 2.0 MB | 只要主程序。文本/代码/Office/压缩包/三维模型可用；**PDF、DWG、OCR 需要额外的 dll**（见 `USAGE.md`） |
+| **`SpaceSift-2.2.2-portable.zip`** | 22 MB | **推荐**。解压后双击 `SpaceSift.exe`，或运行 `install.bat` 一键安装（装到当前用户目录 + 建桌面快捷方式，不需要管理员） |
+| `SpaceSift-2.2.2-exe-only.zip` | 2.0 MB | 只要主程序。文本/代码/Office/压缩包/三维模型可用；**PDF、DWG、OCR 需要额外的 dll**（见 `USAGE.md`） |
 
 两种都不写注册表，删除目录即卸载。
 
@@ -52,6 +52,15 @@ selftest.bat "D:\某个目录"
 Get-FileHash .\SpaceSift-2.0.5-portable.zip -Algorithm SHA256
 # 对比发行页 SHA256SUMS.txt 里的值
 ```
+
+### 弹「这台电脑缺少 Microsoft Edge WebView2 运行时」？
+
+那是 **1.x 旧版**的提示 —— 旧版界面用 Python + WebView2 做的，没有运行时确实开不了。
+**2.x 起整个程序就是一个原生 exe（静态链接），不再需要 WebView2，也不安装任何运行时**；
+只要 Windows 10 1803+ / Windows 11，64 位。
+
+如果你的安装包一启动就弹这个窗，说明下到旧版了：回 Releases 页面下 2.2.1，
+别装旧包，也别为它去装 WebView2。
 
 ## 功能
 

@@ -1811,6 +1811,104 @@ static ImU32 ChildColor(ImU32 base, int siblingIndex, int generation) {
     return MakeColor(h, s, v);
 }
 
+// ---- 方块里的文字 ----------------------------------------------------------
+//
+// 三条规矩，都是为了"读得出来"：
+//   1. 截断必须落在 UTF-8 字符边界上。以前按字节 substr，中文名字被切成半个
+//      汉字，显示成 "??" —— 路径里那几个问号就是这么来的。
+//   2. 放不下就用省略号，而不是让文字被裁成半个字。
+//   3. 窄块给缩写尺寸（169.4 GB → 169G）。36px 宽的竖条塞不下全称，
+//      以前干脆不画 —— 用户看到的是"这块没有数字"。
+
+static size_t Utf8Step(const std::string& s, size_t i) {
+    if (i >= s.size()) return i;
+    const unsigned char c = (unsigned char)s[i];
+    size_t len = 1;
+    if ((c & 0xE0) == 0xC0) len = 2;
+    else if ((c & 0xF0) == 0xE0) len = 3;
+    else if ((c & 0xF8) == 0xF0) len = 4;
+    return std::min(s.size(), i + len);
+}
+
+static float MeasureText(ImFont* font, float fs, const char* b, const char* e) {
+    if (!font || b >= e) return 0.0f;
+    return font->CalcTextSizeA(fs, FLT_MAX, 0.0f, b, e).x;
+}
+
+// 尾部省略：能放下就原样返回
+static std::string FitEnd(ImFont* font, float fs, const std::string& s, float maxW) {
+    if (!font || maxW <= 1.0f || s.empty()) return std::string();
+    if (MeasureText(font, fs, s.data(), s.data() + s.size()) <= maxW) return s;
+    static const char* kDots = "…";
+    const float dotsW = MeasureText(font, fs, kDots, kDots + 3);
+    if (maxW <= dotsW + 1.0f) return std::string();
+    const float budget = maxW - dotsW;
+    size_t last = 0, i = 0;
+    while (i < s.size()) {
+        const size_t next = Utf8Step(s, i);
+        if (MeasureText(font, fs, s.data(), s.data() + next) > budget) break;
+        last = next;
+        i = next;
+    }
+    if (last == 0) return std::string();
+    return s.substr(0, last) + kDots;
+}
+
+// 中段省略：保留开头（盘符/上级）和结尾（文件名），中间用 … 顶掉。
+// 路径最有信息量的是尾部，但只看尾部会不知道是哪个盘、哪个项目。
+static std::string FitMiddle(ImFont* font, float fs, const std::string& s, float maxW) {
+    if (!font || maxW <= 1.0f || s.empty()) return std::string();
+    if (MeasureText(font, fs, s.data(), s.data() + s.size()) <= maxW) return s;
+    static const char* kDots = "…";
+    const float dotsW = MeasureText(font, fs, kDots, kDots + 3);
+    if (maxW <= dotsW + 8.0f) return FitEnd(font, fs, s, maxW);
+
+    // 尾部从最后一个分隔符往前找，至少保住文件名
+    size_t tailStart = s.find_last_of("\\/");
+    tailStart = (tailStart == std::string::npos) ? 0 : tailStart;
+    // 尾部最多占 70% 宽，剩下留给开头
+    while (tailStart > 0 &&
+           MeasureText(font, fs, s.data() + tailStart, s.data() + s.size()) > maxW * 0.7f) {
+        size_t prev = s.find_last_of("\\/", tailStart - 1);
+        if (prev == std::string::npos) { tailStart = 0; break; }
+        tailStart = prev;
+    }
+
+    std::string tail = s.substr(tailStart);
+    if (MeasureText(font, fs, tail.data(), tail.data() + tail.size()) > maxW - dotsW)
+        tail = FitEnd(font, fs, tail, maxW - dotsW);   // 文件名本身就太长
+
+    const float tailW = MeasureText(font, fs, tail.data(), tail.data() + tail.size());
+    float budget = maxW - dotsW - tailW;
+    size_t head = 0, i = 0;
+    while (i < tailStart && budget > 0.0f) {
+        const size_t next = Utf8Step(s, i);
+        if (MeasureText(font, fs, s.data(), s.data() + next) > budget) break;
+        head = next;
+        i = next;
+    }
+    if (head == 0) return std::string(kDots) + tail;
+    return s.substr(0, head) + kDots + tail;
+}
+
+// 窄块用的缩写尺寸：169.4 GB → 169G，1.2 TB → 1.2T
+static std::string ShortBytes(uint64_t n) {
+    if (n < 1024ull) return std::to_string(n) + "B";
+    const char* unit[] = {"K", "M", "G", "T", "P"};
+    double v = (double)n / 1024.0;
+    int u = 0;
+    while (v >= 1024.0 && u < 4) { v /= 1024.0; ++u; }
+    char buf[32];
+    if (v < 10.0) snprintf(buf, sizeof buf, "%.1f%s", v, unit[u]);
+    else snprintf(buf, sizeof buf, "%d%s", (int)(v + 0.5), unit[u]);
+    return buf;
+}
+
+// 每个方块的当前矩形：目标由 squarify 算，显示值朝目标插值。
+// 只按名字记，换目录后旧条目留着也无害（超过上限整体清掉）。
+struct AnimBox { float x = 0, y = 0, w = 0, h = 0; bool init = false; };
+static std::unordered_map<std::string, AnimBox> g_boxAnim;
+
 // rootColor：top 层的基色，传给整棵子树。depth == 0 时自己算 TopColor。
 static void DrawTreemapImpl(ImDrawList* dl, const std::vector<Blk>& blocks,
                             float x, float y, float w, float h, int depth, ImU32 rootColor,
@@ -1818,6 +1916,10 @@ static void DrawTreemapImpl(ImDrawList* dl, const std::vector<Blk>& blocks,
     if (blocks.empty() || w < 6 || h < 6) return;
     // 扫描结束就不再做生长动画，直接按真实面积画满
     const bool animate = g_scanning.load();
+    // 动画按时间推进，不按帧数：扫描时 8ms 一帧、空闲时 40ms 一帧，
+    // 固定系数会让同一段动画一会儿快一会儿慢。
+    const float dt = std::min(std::max(ImGui::GetIO().DeltaTime, 0.0f), 0.1f);
+    if (depth == 0 && g_boxAnim.size() > 8000) g_boxAnim.clear();
 
     // 面积用「真实大小 × 动画进度」，这样块是长出来的而不是突然铺满
     std::vector<float> areas;
@@ -1828,7 +1930,7 @@ static void DrawTreemapImpl(ImDrawList* dl, const std::vector<Blk>& blocks,
             std::string key = blocks[i].name + "|" + std::to_string(depth);
             float& a = g_animMap[key];
             if (a < 0.02f) a = 0.02f;
-            a += (1.0f - a) * 0.22f;
+            a += (1.0f - a) * (1.0f - std::exp(-dt * 10.0f));
             v = a;
         }
         areas.push_back((float)std::max<uint64_t>(blocks[i].size, 1) * v);
@@ -1838,14 +1940,42 @@ static void DrawTreemapImpl(ImDrawList* dl, const std::vector<Blk>& blocks,
     std::vector<Tile> tiles;
     Squarify(areas, keys, 0, 0, w, h, tiles);
 
+    // ---- 卡片排版：标题条 + 底部尺寸条，尺寸和 SpaceSniffer 一个量级
+    const float kTitleH = 20.0f;
+    const float kSizeH  = 16.0f;
+    const float padX    = 5.0f;
+    ImFont* fMain = ImGui::GetFont();
+    const float fMainSize = ImGui::GetFontSize();
+    ImFont* fSmall = g_fontSmall ? g_fontSmall : fMain;
+    const float fSmallSize = g_fontSmall ? g_fontSmall->LegacySize : fMainSize - 2.0f;
+
+    const float ease = 1.0f - std::exp(-dt * 16.0f);   // 帧率无关的插值系数
+
     for (size_t ti = 0; ti < tiles.size(); ++ti) {
         const Tile& t = tiles[ti];
         const Blk& b = blocks[t.index];
-        // 留 1.5px 缝，块之间才有分隔感
-        ImVec2 a(x + t.r.x + 1.0f, y + t.r.y + 1.0f);
-        ImVec2 c(x + t.r.x + t.r.w - 1.0f, y + t.r.y + t.r.h - 1.0f);
-        float bw = c.x - a.x, bh = c.y - a.y;
-        if (bw < 2 || bh < 2) continue;
+
+        // 目标矩形：留 1px 缝，块之间才有分隔感
+        const float tx = x + t.r.x + 1.0f, ty = y + t.r.y + 1.0f;
+        const float tw = t.r.w - 2.0f, th = t.r.h - 2.0f;
+        if (tw < 2.0f || th < 2.0f) continue;
+
+        // 位置也插值：扫描时新块插入会让整层重排，直接跳过去就是"一格一格蹦"。
+        // 同一目录不会有重名子项，(层数, 名字) 足够当动画键。
+        const std::string key = std::to_string(depth) + "|" + b.name;
+        AnimBox& box = g_boxAnim[key];
+        if (!box.init) {
+            box.x = tx; box.y = ty; box.w = tw; box.h = th; box.init = true;
+        } else {
+            box.x += (tx - box.x) * ease;
+            box.y += (ty - box.y) * ease;
+            box.w += (tw - box.w) * ease;
+            box.h += (th - box.h) * ease;
+        }
+        const ImVec2 a(box.x, box.y);
+        const ImVec2 c(box.x + box.w, box.y + box.h);
+        const float bw = box.w, bh = box.h;
+        if (bw < 2.0f || bh < 2.0f) continue;
 
         ImU32 color = b.isFile ? ThemeColor(g_ui.fileBlock)
                                : ((depth == 0) ? TopColor(b.name)
@@ -1854,24 +1984,39 @@ static void DrawTreemapImpl(ImDrawList* dl, const std::vector<Blk>& blocks,
         dl->AddRectFilled(a, c, color, 0.0f);            // 直角，和 SpaceSniffer 一致
         dl->AddRect(a, c, ThemeColor(g_ui.blockBorder), 0.0f, 0, 1.0f);   // 1px 描边
 
-        // 标题条 / 容量：按块高分档，避免重叠；文字单行并裁剪到各自区域
-        const float titleH = 19.0f;
-        const float sizeH = 17.0f;
-        const bool drawTitle = (bw > 40.0f && bh > 22.0f);
-        const bool drawSize = drawTitle && (bw > 54.0f && bh >= titleH + sizeH + 6.0f);
-        if (drawTitle) {
-            dl->AddRectFilled(a, ImVec2(c.x, a.y + titleH), ThemeColor(g_ui.titleOverlay));
-            dl->PushClipRect(a, ImVec2(c.x, a.y + titleH), true);
-            dl->AddText(ImVec2(a.x + 5, a.y + 1), ThemeColor(g_ui.blockText), b.name.c_str());
-            dl->PopClipRect();
+        // 文字分三档：宽够 → 标题 + 尺寸；稍窄 → 只留尺寸（竖条也能看到数字）；
+        // 再窄 → 只留色块。以前尺寸要求 bw > 54，36px 的竖条永远不显示数字。
+        const bool showTitle = bw >= 44.0f && bh >= 24.0f;
+        const bool showSize  = bw >= 30.0f &&
+                               bh >= (showTitle ? kTitleH + kSizeH + 2.0f : kSizeH + 2.0f);
 
-            if (drawSize) {
-                std::string sz = FormatBytes(b.size);
-                dl->AddRectFilled(ImVec2(a.x, c.y - sizeH), c, ThemeColor(g_ui.sizeOverlay));
-                dl->PushClipRect(ImVec2(a.x, c.y - sizeH), c, true);
-                dl->AddText(ImVec2(a.x + 5, c.y - sizeH), ThemeColor(g_ui.blockSubText), sz.c_str());
-                dl->PopClipRect();
-            }
+        if (showTitle) {
+            dl->AddRectFilled(a, ImVec2(c.x, a.y + kTitleH), ThemeColor(g_ui.titleOverlay));
+            const bool narrow = bw < 96.0f;              // 窄块换小字号，能多塞两个字
+            ImFont* f = narrow ? fSmall : fMain;
+            const float fs = narrow ? fSmallSize : fMainSize;
+            const std::string nm = FitEnd(f, fs, b.name, bw - padX * 2.0f);
+            if (!nm.empty())
+                dl->AddText(f, fs, ImVec2(a.x + padX, a.y + (kTitleH - fs) * 0.5f - 1.0f),
+                            ThemeColor(g_ui.blockText), nm.c_str());
+        }
+
+        if (showSize) {
+            const float y0 = c.y - kSizeH;
+            // 底条从透明渐变到实色，比一刀切的色块柔和
+            const ImU32 solid = ThemeColor(g_ui.sizeOverlay);
+            dl->AddRectFilledMultiColor(ImVec2(a.x, y0), ImVec2(c.x, c.y),
+                                        solid & 0x00FFFFFFu, solid & 0x00FFFFFFu, solid, solid);
+            const bool narrow = bw < 66.0f;
+            ImFont* f = narrow ? fSmall : fMain;
+            const float fs = narrow ? fSmallSize : fMainSize - 1.0f;
+            std::string sz = FormatBytes(b.size);
+            if (MeasureText(f, fs, sz.data(), sz.data() + sz.size()) > bw - padX * 2.0f)
+                sz = ShortBytes(b.size);                 // 全称放不下就给 169G
+            sz = FitEnd(f, fs, sz, bw - padX * 2.0f);
+            if (!sz.empty())
+                dl->AddText(f, fs, ImVec2(a.x + padX, y0 + (kSizeH - fs) * 0.5f),
+                            ThemeColor(g_ui.blockSubText), sz.c_str());
         }
 
         // 递归画下一层：只要这块还够大就继续切，一直到看不出结构为止。
@@ -1880,9 +2025,9 @@ static void DrawTreemapImpl(ImDrawList* dl, const std::vector<Blk>& blocks,
             std::vector<Blk> children;
             if (liveSnap) GatherLiveChildren(b.idx, children, liveSnap, 6);
             else GatherChildren(b.idx, children, 6);
-            float top = drawTitle ? 22.0f : 4.0f;
+            float top = showTitle ? kTitleH + 2.0f : 3.0f;
             // 父块底部盖着容量条，子块必须停在它上方，否则容量文字会被子块盖掉
-            float bottom = drawSize ? sizeH : 0.0f;
+            float bottom = showSize ? kSizeH : 0.0f;
             float childH = bh - top - bottom - 1.0f;
             if (childH > 6.0f) {
                 if (children.size() == 1) {
@@ -1930,6 +2075,7 @@ static void DrawTreemapImpl(ImDrawList* dl, const std::vector<Blk>& blocks,
                 }
             }
             if (hovered) {
+                dl->AddRectFilled(a, c, IM_COL32(255, 255, 255, 16));
                 dl->AddRect(a, c, ThemeColor(g_ui.accent), 4.0f, 0, 2.0f);
                 std::string sz = FormatBytes(b.size);
                 if (b.isRest)
@@ -2677,29 +2823,119 @@ static void DrawContentSearchTab() {
     }
     prevBusy = busyNow;
 
-    if (busyNow) {
-        const int total = content::g_seen.load();
-        const int done  = content::g_done.load();
-        const int fresh = content::g_parsed.load();
-        const int reused = content::g_skipped.load();
+    // 建索引刚开始的这一刻记时；结束/重新开始时复位
+    static bool   indexWasBusy = false;
+    static double indexStartedAt = 0.0;
+    if (!busyNow) indexWasBusy = false;
 
-        ImGui::TextDisabled(content::g_passes.load() == 0 ? "正在清点文件…"
-                                                          : "正在建立内容索引…");
-        if (total > 0 && content::g_passes.load() != 0) {
-            const float frac = (float)done / (float)total;
-            // 进度条本身不写字：10px 高的条里塞文字会压到上下两行
-            ImGui::ProgressBar(frac, ImVec2(-1, 8), "");
-            ImGui::TextDisabled("%d / %d  (%.0f%%)", done, total, frac * 100.0f);
-        } else {
-            ImGui::ProgressBar(-1.0f * (float)ImGui::GetTime(), ImVec2(-1, 8), "");
-            if (total > 0) ImGui::TextDisabled("可抽正文的候选 %d 个", total);
+    if (busyNow) {
+        const int total  = content::g_seen.load();
+        const int done   = content::g_done.load();
+        const int fresh  = content::g_parsed.load();
+        const int reused = content::g_skipped.load();
+        const int pass   = content::g_passes.load();   // 0=清点 1=抽取
+
+        // 这一轮从什么时候开始的：算速度、算剩余时间都靠它
+        if (!indexWasBusy) {
+            indexStartedAt = ImGui::GetTime();
+            indexWasBusy = true;
         }
-        ImGui::TextDisabled("新抽取 %d 个 · 复用上次 %d 个", fresh, reused);
-        std::string cur = content::CurrentPath();
-        if (cur.size() > 56) cur = "…" + cur.substr(cur.size() - 55);
-        if (!cur.empty()) ImGui::TextDisabled("%s", cur.c_str());
-        ImGui::Dummy(ImVec2(0, 4));
+        const double elapsed = ImGui::GetTime() - indexStartedAt;
+        char eta[64] = "";
+
+        // 阶段标题 + 剩余时间（同一行，右边对齐）
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(pass == 0 ? "① 清点文件" : "② 抽取正文");
+        ImGui::SameLine();
+        {
+            const float avail = ImGui::GetContentRegionAvail().x;
+            const float tw = ImGui::CalcTextSize("约剩 -- 分 -- 秒").x;
+            if (avail > tw) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + avail - tw);
+            if (pass == 1 && total > 0 && done > 1 && elapsed > 1.0) {
+                const int remain = (int)((double)(total - done) * elapsed / (double)done);
+                if (remain > 3600)
+                    snprintf(eta, sizeof eta, "约剩 %d 时 %02d 分", remain / 3600, (remain / 60) % 60);
+                else
+                    snprintf(eta, sizeof eta, "约剩 %d 分 %02d 秒", remain / 60, remain % 60);
+                ImGui::TextDisabled("%s", eta);
+            } else {
+                ImGui::TextDisabled(pass == 0 ? "统计可抽正文的文件" : "");
+            }
+        }
+
+        // 进度条：清点阶段还没有总量，就画不确定进度
+        if (pass == 1 && total > 0) {
+            const float frac = (float)done / (float)total;
+            char ov[64];
+            snprintf(ov, sizeof ov, "%.0f%%", frac * 100.0f);
+            ImGui::ProgressBar(frac, ImVec2(-1, 10), ov);
+        } else {
+            ImGui::ProgressBar(-1.0f * (float)ImGui::GetTime(), ImVec2(-1, 10), "");
+        }
+
+        // 计数：两行等宽，数字用等宽排列，扫一眼就知道在动
+        ImGui::Dummy(ImVec2(0, 2));
+        ImGui::PushFont(g_fontSmall, 0.0f);
+        if (pass == 1 && total > 0) {
+            ImGui::TextDisabled("已处理 %d / %d     新抽取 %d · 复用 %d",
+                                done, total, fresh, reused);
+        } else {
+            ImGui::TextDisabled("已清点 %d 个候选     已抽正文 %d 个", total, fresh);
+        }
+        ImGui::PopFont();
+
+        // 当前文件：中间省略，保住盘符和文件名；悬停看全路径
+        {
+            const std::string cur = content::CurrentPath();
+            if (!cur.empty()) {
+                const float maxW = ImGui::GetContentRegionAvail().x;
+                const std::string shown = FitMiddle(g_fontSmall, 12.0f, cur, maxW);
+                ImGui::PushFont(g_fontSmall, 0.0f);
+                ImGui::TextDisabled("%s", shown.c_str());
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", cur.c_str());
+                ImGui::PopFont();
+            }
+        }
+
+        // 最近抽取：让这块空间告诉我们"它具体在做什么"，
+        // 而不是几行字顶在最上面、下面一大片空白。
+        {
+            const auto recent = content::RecentFiles();
+            if (!recent.empty()) {
+                ImGui::Dummy(ImVec2(0, 8));
+                ImGui::PushFont(g_fontSmall, 0.0f);
+                ImGui::TextDisabled("最近抽取");
+                const float rowW = ImGui::GetContentRegionAvail().x;
+                const float x0 = ImGui::GetCursorPosX();
+                // 按剩余高度决定列几行，把这面板的空白用起来
+                const float lineH = ImGui::GetTextLineHeightWithSpacing();
+                const int maxRows = std::max(0, (int)((ImGui::GetContentRegionAvail().y - 46.0f) / lineH));
+                int shown = 0;
+                for (int i = (int)recent.size() - 1; i >= 0 && shown < maxRows; --i, ++shown) {
+                    const auto& rf = recent[(size_t)i];
+                    const std::string sz = FormatBytes(rf.size);
+                    const float szW = ImGui::CalcTextSize(sz.c_str()).x;
+                    const float nameW = std::max(40.0f, rowW - szW - 10.0f);
+                    const std::string nm = FitEnd(ImGui::GetFont(), ImGui::GetFontSize(),
+                                                  rf.name, nameW);
+                    ImGui::PushStyleColor(ImGuiCol_Text,
+                                          ThemeColor(rf.ok ? g_ui.textDim : g_ui.textFaint));
+                    ImGui::TextUnformatted(nm.c_str());
+                    ImGui::SameLine(x0 + std::max(0.0f, rowW - szW));
+                    ImGui::TextUnformatted(sz.c_str());
+                    ImGui::PopStyleColor();
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", rf.path.c_str());
+                }
+                ImGui::PopFont();
+            }
+        }
+
+        ImGui::Dummy(ImVec2(0, 6));
         if (GhostButton("停止", ImVec2(64, 26))) g_contentCancel = true;
+        ImGui::SameLine();
+        ImGui::PushFont(g_fontSmall, 0.0f);
+        ImGui::TextDisabled("停下的部分会保留，下次点「增量更新」接着做");
+        ImGui::PopFont();
         return;
     }
 
@@ -3186,8 +3422,12 @@ static void StartScan(const std::string& root) {
     g_detecting = false;
     g_detectStarted = false;
     ClearDetectMsg();
-    g_rootPath = root;
-    ProbeVolume(root);
+    // 统一斜杠：输入框里留着 "E:/" 的话，面包屑会拼出 "E:/\consol" 这种怪东西，
+    // 索引库也会把同一个目录存成两种 path。扫描入口归一化一次，后面全都干净。
+    const std::string norm = content::NormRoot(root);
+    g_rootPath = norm;
+    snprintf(g_pathBuf, sizeof g_pathBuf, "%s", norm.c_str());
+    ProbeVolume(norm);
     g_scanning = true;
     g_stopReq = false;
     g_paused = false;

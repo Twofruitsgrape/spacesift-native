@@ -76,6 +76,16 @@ extern std::atomic<bool> g_busy;
 extern std::atomic<int>  g_files;    // 库里已有的文档数
 extern std::atomic<int>  g_passes;   // 0=清点中 1=抽取中
 
+// 最近抽取的文件（进度面板用）。多线程写、UI 读，返回的是快照。
+struct RecentFile {
+    std::string name;   // 文件名
+    std::string path;   // 完整路径
+    uint64_t    size = 0;
+    bool        ok = true;   // false = 抽不出正文
+};
+std::vector<RecentFile> RecentFiles();
+void ClearRecent();
+
 std::string CurrentPath();
 std::string LastError();
 // 需要让用户知道、但不是错误的事（旧索引作废、被中途停止……）

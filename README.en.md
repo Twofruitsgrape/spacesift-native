@@ -36,6 +36,8 @@ Drive C, 3.39 M files / 436 GB: scan takes 38 s, peak memory 125 MB, executable 
 
 Windows 10 1803+ / Windows 11, 64-bit. Uses the DirectX 11 and UCRT components that ship with the OS; no extra runtime needed.
 
+> Seeing "Microsoft Edge WebView2 Runtime is missing"? That message comes from the **legacy 1.x** build (Python + WebView2 UI). Since 2.x the whole app is one native statically-linked exe — no WebView2, no runtime install. Grab the 2.2.1 package instead of old releases.
+
 ## Building from source
 
 Requires MinGW-w64 (`g++`, `gcc`, `windres` on `PATH`).
