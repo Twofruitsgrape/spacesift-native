@@ -261,45 +261,47 @@ static UiTheme MakeTheme(bool dark) {
     UiTheme t;
     t.dark = dark;
     if (dark) {
-        // 暗色：三层灰（页面 / 面板 / 卡片）拉开层次，边框只做极轻的分隔
-        t.windowBg      = RGBA(24, 26, 30);
-        t.childBg       = RGBA(33, 35, 40);
-        t.cardBg        = RGBA(39, 42, 47);
-        t.cardHover     = RGBA(48, 51, 57);
-        t.cardSelected  = RGBA(40, 56, 80);
-        t.border        = RGBA(52, 56, 63);
-        t.borderStrong  = RGBA(80, 85, 94);
-        t.inputBg       = RGBA(34, 37, 43);
-        t.tabBg         = RGBA(40, 43, 49);
-        t.text          = RGBA(231, 233, 238);
-        t.textDim       = RGBA(163, 169, 178);
-        t.textFaint     = RGBA(144, 150, 160);
-        t.accent        = RGBA(112, 165, 246);
-        t.accentHover   = RGBA(146, 190, 255);
-        t.accentText    = RGBA(21, 23, 27);
-        t.brand         = RGBA(38, 106, 200);
-        t.success       = RGBA(112, 190, 144);
-        t.warning       = RGBA(232, 180, 92);
-        t.danger        = RGBA(236, 122, 112);
-        t.canvas        = RGBA(19, 21, 25);
-        t.titleOverlay  = RGBA(0, 0, 0, 0.62f);
-        t.sizeOverlay   = RGBA(0, 0, 0, 0.38f);
-        t.blockText     = RGBA(233, 235, 240);
-        t.blockSubText  = RGBA(196, 200, 208);
-        t.blockBorder   = RGBA(0, 0, 0, 0.45f);
-        t.fileBlock     = RGBA(58, 62, 70);
-        t.dimBg         = RGBA(0, 0, 0, 0.58f);
+        // 液态玻璃暗色：页面底色交给极光光斑（DrawUI 里手绘），
+        // 窗口背景透明，面板全部用半透明白 —— 玻璃要能"透出"背后在动的东西。
+        // 不透明度刻意压低，靠文字亮度和描边保对比度，而不是加深底色。
+        t.windowBg      = RGBA(10, 13, 28, 0.0f);          // 透明：极光从底下透上来
+        t.childBg       = RGBA(255, 255, 255, 0.07f);      // 右栏玻璃面板
+        t.cardBg        = RGBA(255, 255, 255, 0.10f);
+        t.cardHover     = RGBA(255, 255, 255, 0.17f);
+        t.cardSelected  = RGBA(139, 92, 246, 0.30f);       // 紫罗兰选中态
+        t.border        = RGBA(255, 255, 255, 0.14f);
+        t.borderStrong  = RGBA(255, 255, 255, 0.30f);
+        t.inputBg       = RGBA(255, 255, 255, 0.08f);
+        t.tabBg         = RGBA(255, 255, 255, 0.07f);
+        t.text          = RGBA(238, 241, 255);
+        t.textDim       = RGBA(238, 241, 255, 0.62f);
+        t.textFaint     = RGBA(238, 241, 255, 0.40f);
+        t.accent        = RGBA(139, 92, 246);              // 紫罗兰
+        t.accentHover   = RGBA(167, 139, 250);
+        t.accentText    = RGBA(255, 255, 255);
+        t.brand         = RGBA(99, 102, 241);              // 靛蓝
+        t.success       = RGBA(52, 211, 153);
+        t.warning       = RGBA(251, 191, 36);
+        t.danger        = RGBA(251, 113, 133);
+        t.canvas        = RGBA(10, 13, 28, 0.45f);         // 方块图画布：半透明暗纱
+        t.titleOverlay  = RGBA(0, 0, 0, 0.55f);
+        t.sizeOverlay   = RGBA(0, 0, 0, 0.34f);
+        t.blockText     = RGBA(240, 242, 250);
+        t.blockSubText  = RGBA(210, 214, 228);
+        t.blockBorder   = RGBA(0, 0, 0, 0.42f);
+        t.fileBlock     = RGBA(255, 255, 255, 0.16f);      // 文件块：磨砂玻璃
+        t.dimBg         = RGBA(4, 6, 16, 0.62f);
     } else {
         // 亮色：页面用浅灰，卡片用纯白，边框压到几乎看不见
-        t.windowBg      = RGBA(246, 247, 249);
-        t.childBg       = RGBA(255, 255, 255);
-        t.cardBg        = RGBA(255, 255, 255);
-        t.cardHover     = RGBA(241, 244, 248);
-        t.cardSelected  = RGBA(229, 239, 254);
-        t.border        = RGBA(227, 230, 235);
-        t.borderStrong  = RGBA(198, 204, 212);
-        t.inputBg       = RGBA(239, 242, 246);
-        t.tabBg         = RGBA(240, 243, 247);
+        t.windowBg      = RGBA(238, 240, 251, 0.0f);       // 透明：淡紫/淡青光斑透上来
+        t.childBg       = RGBA(255, 255, 255, 0.55f);      // 玻璃面板（亮色要更实才保文字对比度）
+        t.cardBg        = RGBA(255, 255, 255, 0.72f);
+        t.cardHover     = RGBA(255, 255, 255, 0.92f);
+        t.cardSelected  = RGBA(139, 92, 246, 0.16f);
+        t.border        = RGBA(255, 255, 255, 0.85f);
+        t.borderStrong  = RGBA(120, 126, 150, 0.55f);
+        t.inputBg       = RGBA(255, 255, 255, 0.60f);
+        t.tabBg         = RGBA(255, 255, 255, 0.55f);
         t.text          = RGBA(26, 28, 32);
         t.textDim       = RGBA(78, 84, 94);
         t.textFaint     = RGBA(100, 106, 116);
@@ -310,7 +312,7 @@ static UiTheme MakeTheme(bool dark) {
         t.success       = RGBA(22, 122, 66);
         t.warning       = RGBA(196, 108, 12);
         t.danger        = RGBA(202, 46, 40);
-        t.canvas        = RGBA(241, 243, 246);
+        t.canvas        = RGBA(238, 240, 251, 0.50f);
         t.titleOverlay  = RGBA(255, 255, 255, 0.80f);
         t.sizeOverlay   = RGBA(255, 255, 255, 0.64f);
         t.blockText     = RGBA(26, 28, 32);
@@ -338,15 +340,69 @@ static void ApplyDarkTitleBar() {
     DwmFlush();   // 让 DWM 立刻提交这一帧，标题栏不会慢半拍
 }
 
+// ============================================================ 液态玻璃材质
+//
+// 玻璃的三个要素在这里：
+//   1. 极光光斑 —— 面板后面必须有"在动的彩色"，玻璃才有折射的内容
+//   2. 半透明面板 —— token 全部压到 0.05~0.30 不透明度
+//   3. GlassFx —— 顶部光泽带 + 上下沿明暗线，模拟玻璃边缘的镜面反光
+
+static void DrawAurora(ImDrawList* dl, const ImVec2& vpMin, const ImVec2& vpSize) {
+    struct Blob { ImVec2 rel; float radius; ImU32 col; float phase; float speed; };
+    static const Blob blobs[] = {
+        { {0.10f, 0.04f}, 380.0f, IM_COL32(124,  58, 237, 30), 0.0f, 0.10f },  // 紫
+        { {0.94f, 0.30f}, 430.0f, IM_COL32( 14, 165, 233, 26), 2.1f, 0.13f },  // 青
+        { {0.36f, 0.96f}, 400.0f, IM_COL32(217,  70, 239, 22), 4.2f, 0.08f },  // 品红
+        { {0.82f, 0.86f}, 300.0f, IM_COL32(245, 158,  11, 16), 1.2f, 0.11f },  // 琥珀
+    };
+    const float dim = g_darkTheme ? 1.0f : 0.5f;   // 亮色主题光斑减半，别把文字衬糊
+    const float t = (float)ImGui::GetTime();
+    for (const Blob& b : blobs) {
+        // 慢速漂移：玻璃后面的"内容"在动，玻璃才像玻璃
+        const float ox = sinf(t * b.speed + b.phase) * 60.0f;
+        const float oy = cosf(t * b.speed * 0.8f + b.phase) * 45.0f;
+        const ImVec2 c(vpMin.x + b.rel.x * vpSize.x + ox,
+                       vpMin.y + b.rel.y * vpSize.y + oy);
+        // ImGui 没有径向渐变原语：同心圆叠出来，二次衰减让边缘更柔
+        for (int i = 16; i >= 1; --i) {
+            const float f = (float)i / 16.0f;
+            const int a = (int)((float)(b.col >> IM_COL32_A_SHIFT & 0xFF) * f * f * dim);
+            dl->AddCircleFilled(c, b.radius * f,
+                                (b.col & ~IM_COL32_A_MASK) | (ImU32(a) << IM_COL32_A_SHIFT), 48);
+        }
+    }
+}
+
+// 画在刚结束的 ItemRect 上：顶部光泽带 + 上亮下暗两道边。
+// 按钮填色之后调一下，实心按钮立刻有"玻璃胶囊"的体积感。
+static void GlassFx(float rounding) {
+    const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+    const float h = b.y - a.y;
+    if (h < 6.0f) return;
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const float topH = h * 0.45f;
+    const float r = std::min(rounding, h * 0.5f);
+    dl->AddRectFilled(ImVec2(a.x, a.y + 1), ImVec2(b.x, a.y + 1 + topH),
+                      IM_COL32(255, 255, 255, 26), r, ImDrawFlags_RoundCornersTop);
+    const float rx = std::min(r + 1.0f, (b.x - a.x) * 0.5f - 1.0f);
+    if (rx > 0.0f) {
+        dl->AddLine(ImVec2(a.x + rx, a.y + 1), ImVec2(b.x - rx, a.y + 1),
+                    IM_COL32(255, 255, 255, 92), 1.0f);
+        dl->AddLine(ImVec2(a.x + rx, b.y - 1), ImVec2(b.x - rx, b.y - 1),
+                    IM_COL32(0, 0, 0, 62), 1.0f);
+    }
+}
+
 static void ApplyTheme() {
     g_ui = MakeTheme(g_darkTheme);
     ImGuiStyle& s = ImGui::GetStyle();
 
-    // 圆角只用两档：控件 8，容器 12。之前 8/9/10/12 混用，一眼能看出拼凑感。
+    // 圆角两档：控件贴近胶囊（FrameRounding 会在按钮里被再推高），
+    // 容器 16。圆角是玻璃胶囊的轮廓，太小就只剩"圆角矩形"了。
     s.WindowRounding    = 0.0f;
-    s.ChildRounding     = 12.0f;
-    s.FrameRounding     = 8.0f;
-    s.PopupRounding     = 10.0f;
+    s.ChildRounding     = 16.0f;
+    s.FrameRounding     = 9.0f;
+    s.PopupRounding     = 12.0f;
     s.ScrollbarRounding = 8.0f;
     s.GrabRounding      = 8.0f;
     s.WindowBorderSize  = 0.0f;
@@ -1983,6 +2039,10 @@ static void DrawTreemapImpl(ImDrawList* dl, const std::vector<Blk>& blocks,
         ImU32 base = (depth == 0 || b.isFile) ? color : rootColor;
         dl->AddRectFilled(a, c, color, 0.0f);            // 直角，和 SpaceSniffer 一致
         dl->AddRect(a, c, ThemeColor(g_ui.blockBorder), 0.0f, 0, 1.0f);   // 1px 描边
+        // 玻璃上沿：一条极淡的高光线，块面立刻有"厚度"
+        if (bw > 8.0f)
+            dl->AddLine(ImVec2(a.x + 2, a.y + 1), ImVec2(c.x - 2, a.y + 1),
+                        IM_COL32(255, 255, 255, 26), 1.0f);
 
         // 文字分三档：宽够 → 标题 + 尺寸；稍窄 → 只留尺寸（竖条也能看到数字）；
         // 再窄 → 只留色块。以前尺寸要求 bw > 54，36px 的竖条永远不显示数字。
@@ -2401,6 +2461,13 @@ static int Segmented(const char* id, const char* const* labels, int count, int c
     ImDrawList* dl = ImGui::GetWindowDrawList();
     dl->AddRectFilled(p, ImVec2(p.x + total, p.y + height),
                       ThemeColor(g_ui.inputBg), height * 0.5f);
+    // 玻璃底座：顶部光泽带 + 上沿高光线
+    dl->AddRectFilled(ImVec2(p.x, p.y + 1), ImVec2(p.x + total, p.y + height * 0.5f),
+                      IM_COL32(255, 255, 255, g_darkTheme ? 18 : 70),
+                      height * 0.5f, ImDrawFlags_RoundCornersTop);
+    dl->AddLine(ImVec2(p.x + height * 0.5f, p.y + 1),
+                ImVec2(p.x + total - height * 0.5f, p.y + 1),
+                IM_COL32(255, 255, 255, g_darkTheme ? 70 : 160), 1.0f);
     dl->AddRect(p, ImVec2(p.x + total, p.y + height), ThemeColor(g_ui.border),
                 height * 0.5f, 0, 1.0f);
 
@@ -2479,9 +2546,11 @@ static bool GhostButton(const char* label, const ImVec2& size = ImVec2(0, 0)) {
     ImGui::PushStyleColor(ImGuiCol_ButtonActive, g_ui.cardSelected);
     ImGui::PushStyleColor(ImGuiCol_Border, g_ui.border);
     ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 999.0f);
     bool r = ImGui::Button(label, size);
-    ImGui::PopStyleVar();
+    ImGui::PopStyleVar(2);
     ImGui::PopStyleColor(4);
+    if (ImGui::IsItemHovered()) GlassFx(999.0f);
     return r;
 }
 
@@ -2551,14 +2620,17 @@ static void ToolbarDivider(float height = 20.0f) {
     ImGui::SameLine(0, 10);
 }
 
-// 主操作按钮：实心强调色。
+// 主操作按钮：实心强调色胶囊 + 玻璃高光。
 static bool PrimaryButton(const char* label, const ImVec2& size = ImVec2(0, 0)) {
     ImGui::PushStyleColor(ImGuiCol_Button, g_ui.accent);
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, g_ui.accentHover);
     ImGui::PushStyleColor(ImGuiCol_ButtonActive, g_ui.accentHover);
     ImGui::PushStyleColor(ImGuiCol_Text, g_ui.accentText);
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 999.0f);   // 胶囊
     bool r = ImGui::Button(label, size);
+    ImGui::PopStyleVar();
     ImGui::PopStyleColor(4);
+    GlassFx(999.0f);
     return r;
 }
 
@@ -2567,8 +2639,11 @@ static bool DangerButton(const char* label, const ImVec2& size = ImVec2(0, 0)) {
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, g_ui.danger);
     ImGui::PushStyleColor(ImGuiCol_ButtonActive, g_ui.danger);
     ImGui::PushStyleColor(ImGuiCol_Text, g_ui.accentText);
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 999.0f);
     bool r = ImGui::Button(label, size);
+    ImGui::PopStyleVar();
     ImGui::PopStyleColor(4);
+    GlassFx(999.0f);
     return r;
 }
 
@@ -2625,12 +2700,12 @@ static bool RowCard(const char* id, const std::string& title, const std::string&
     ImDrawList* dl = ImGui::GetWindowDrawList();
     if (selected) {
         dl->AddRectFilled(p0, ImVec2(p0.x + avail, p0.y + rowH),
-                          ThemeColor(g_ui.cardSelected), 8.0f);
+                          ThemeColor(g_ui.cardSelected), 12.0f);
         dl->AddRectFilled(ImVec2(p0.x + 2, p0.y + 10), ImVec2(p0.x + 4.5f, p0.y + rowH - 10),
                           ThemeColor(g_ui.accent), 1.5f);
     } else if (hovered) {
         dl->AddRectFilled(p0, ImVec2(p0.x + avail, p0.y + rowH),
-                          ThemeColor(g_ui.cardHover), 8.0f);
+                          ThemeColor(g_ui.cardHover), 12.0f);
     }
 
     // 自绘勾选框
@@ -3612,6 +3687,25 @@ static const float kCtrlH = 30.0f;
 // 宽度从右边界倒推：主题开关贴右，搜索组整体右对齐，路径框吃掉剩下的空间。
 // 之前用「预留 N 像素」估算法，窗口一变窄主题开关就被挤出右边界。
 static void DrawTopBar() {
+    {
+        // 工具条底下垫一条玻璃胶囊带：控件"坐"在玻璃上，而不是悬在虚空里。
+        // 先画（在后），控件画上去才有层次。
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const ImVec2 p0 = ImGui::GetCursorScreenPos();
+        const float x0 = ImGui::GetWindowPos().x + 6.0f;
+        const float x1 = ImGui::GetWindowPos().x + ImGui::GetWindowSize().x - 6.0f;
+        const float y0 = p0.y - 6.0f, y1 = p0.y + kCtrlH + 8.0f;
+        // 暗色用暗纱、亮色用白纱：玻璃感靠上沿高光表达，文字对比度靠纱罩保
+        dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1),
+                          g_darkTheme ? IM_COL32(8, 11, 24, 150) : IM_COL32(255, 255, 255, 150),
+                          (y1 - y0) * 0.5f);
+        dl->AddRectFilled(ImVec2(x0, y0 + 1), ImVec2(x1, y0 + 1 + (y1 - y0) * 0.45f),
+                          IM_COL32(255, 255, 255, g_darkTheme ? 16 : 70),
+                          (y1 - y0) * 0.5f, ImDrawFlags_RoundCornersTop);
+        dl->AddLine(ImVec2(x0 + (y1 - y0) * 0.5f, y0 + 1),
+                    ImVec2(x1 - (y1 - y0) * 0.5f, y0 + 1),
+                    IM_COL32(255, 255, 255, g_darkTheme ? 70 : 180), 1.0f);
+    }
     const float padY = std::max(2.0f, (kCtrlH - ImGui::GetTextLineHeight() * 1.0f) * 0.5f);
     static const char* kModes[] = {"文件名", "内容"};
     static const char* kThemes[] = {"亮色", "暗色"};
@@ -3752,6 +3846,16 @@ static void DrawUI() {
                  ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
                  ImGuiWindowFlags_NoBringToFrontOnFocus);
 
+    // 页面底色铺一层不透明的（清屏色只决定第一帧），极光画在它上面，
+    // 玻璃面板透出来的 = 底色 + 光斑。亮色主题若没有这层，透出来的就是黑底。
+    {
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const ImVec2 vpMax(vp->WorkPos.x + vp->WorkSize.x, vp->WorkPos.y + vp->WorkSize.y);
+        dl->AddRectFilled(vp->WorkPos, vpMax,
+                          g_darkTheme ? IM_COL32(10, 13, 28, 255) : IM_COL32(238, 240, 251, 255));
+        DrawAurora(dl, vp->WorkPos, vp->WorkSize);
+    }
+
     // 后台检索算完了就把结果搬进来（每帧一次，几乎零成本）
     PollSearch();
 
@@ -3825,8 +3929,8 @@ static void DrawUI() {
                                 : hovered ? ThemeColor(g_ui.cardHover)
                                           : ThemeColor(g_ui.cardBg);
                 const ImU32 bd = active ? ThemeColor(g_ui.brand) : ThemeColor(g_ui.border);
-                dl->AddRectFilled(p, ImVec2(p.x + w, p.y + h), bg, 8.0f);
-                dl->AddRect(p, ImVec2(p.x + w, p.y + h), bd, 8.0f, 0, 1.0f);
+                dl->AddRectFilled(p, ImVec2(p.x + w, p.y + h), bg, h * 0.5f);
+                dl->AddRect(p, ImVec2(p.x + w, p.y + h), bd, h * 0.5f, 0, 1.0f);
                 dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(),
                             ImVec2(p.x + (w - ts.x) * 0.5f, p.y + (h - ts.y) * 0.5f),
                             active ? IM_COL32(255, 255, 255, 255) : ThemeColor(g_ui.text),
@@ -4098,7 +4202,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
         SpaceSift_ImeFrame();
         ImGui::Render();
 
-        const float clear[4] = {0x0f / 255.0f, 0x11 / 255.0f, 0x15 / 255.0f, 1.0f};
+        const float clear[4] = {0x0a / 255.0f, 0x0d / 255.0f, 0x1c / 255.0f, 1.0f};
         g_pd3dContext->OMSetRenderTargets(1, &g_mainRTV, nullptr);
         g_pd3dContext->ClearRenderTargetView(g_mainRTV, clear);
         ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
