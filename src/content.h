@@ -39,13 +39,22 @@ struct IndexInfo {
 };
 std::vector<IndexInfo> ListIndexes();
 
+// ListIndexes 的缓存版：要打开每一份库读 meta，27 份约 0.7 秒
+// （老库缺 docs 元数据时更慢）。界面上每帧调一次 = 每帧冻 0.7 秒，
+// 所以绘制路径一律走这里，只在缓存变脏时读盘。
+std::vector<IndexInfo> IndexSnapshot();
+void InvalidateIndexes();   // 建库 / 删库 / 增量更新后调用
+
 // FTS5 倒排索引 + CJK bigram 分词；排序用「命中次数/文档长度」（bm25 在本环境不可靠）。
 // 单字查询或 MATCH 不可用时退回 LIKE 全表扫描。
-std::vector<db::Hit> Search(const std::string& root, const std::string& query, int limit);
+std::vector<db::Hit> Search(const std::string& root, const std::string& query, int limit,
+                           const std::atomic<bool>* cancel = nullptr);
 
 // 跨所有已建索引搜索：每份库各查一次，按路径去重，按相关度合并。
 // 同一个文件同时被父目录和子目录索引过时只会出现一条。
-std::vector<db::Hit> SearchAll(const std::string& query, int limit);
+// cancel 非空时逐库检查，用于"搜索中关窗口"能立刻退出
+std::vector<db::Hit> SearchAll(const std::string& query, int limit,
+                              const std::atomic<bool>* cancel = nullptr);
 
 // 删掉这份索引（连同 -wal / -shm 残留）。按库文件删，root 元信息坏掉的也能删。
 bool DeleteIndex(const std::string& root);

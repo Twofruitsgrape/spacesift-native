@@ -4,6 +4,7 @@
 // 这样「扫完」和「能搜」是同一个时刻，不用再走第二遍盘。
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -47,6 +48,10 @@ void AbortBulk();
 // 查询：按文件名子串匹配，按大小降序
 std::vector<Hit> Search(const std::string& query, int limit = 400);
 
+// 同一件事，但显式指定库文件：自开连接、不碰全局状态，可以在后台线程里跑。
+std::vector<Hit> SearchIn(const std::string& dbPath, const std::string& query, int limit = 400,
+                          const std::atomic<bool>* cancel = nullptr);
+
 // 已建立的文件名索引清单（给"检索范围 = 所有已索引"与索引管理用）
 struct IndexInfo {
     std::string root;
@@ -58,7 +63,8 @@ struct IndexInfo {
 std::vector<IndexInfo> ListIndexes();
 
 // 跨所有已建索引按文件名搜：每份库各查一次，按路径去重，按大小合并。
-std::vector<Hit> SearchAll(const std::string& query, int limit = 400);
+std::vector<Hit> SearchAll(const std::string& query, int limit = 400,
+                           const std::atomic<bool>* cancel = nullptr);
 
 uint64_t Count();
 bool IsFresh(const std::string& root, int maxAgeHours = 12);

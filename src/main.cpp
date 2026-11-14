@@ -7,6 +7,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -1536,6 +1537,17 @@ static LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
     case WM_SYSCOMMAND:
         if ((wParam & 0xfff0) == SC_KEYMENU) return 0;
         break;
+    case WM_GETMINMAXINFO: {
+        // 顶栏一行放得下的下限：logo + 磁盘 + 路径(160) + 浏览 + 暂停/结束 +
+        // 模式开关 + 搜索框(140) + 搜索 + 主题。再窄就只能互相压住了，
+        // 与其画出错位的顶栏，不如不让窗口缩到那一步。
+        auto* mmi = reinterpret_cast<MINMAXINFO*>(lParam);
+        const UINT dpi = GetDpiForWindow(hWnd);
+        const float s = dpi ? (float)dpi / 96.0f : 1.0f;
+        mmi->ptMinTrackSize.x = (LONG)(1120 * s);
+        mmi->ptMinTrackSize.y = (LONG)(640 * s);
+        return 0;
+    }
     case WM_DESTROY:
         PostQuitMessage(0);
         return 0;
@@ -2020,22 +2032,49 @@ static void RenderTreemap() {
 
 // ============================================================ 搜索
 
-static void RunSearchNow(const std::string& query) {
-    // 扫描线程正在用小 sqlite 连接写索引；UI 线程若走 OpenExisting/Close
-    // 会把这个连接和语句在另一个线程里关掉，轻则索引丢失，重则崩溃。
-    if (g_scanning.load()) {
-        g_lastCleanMsg = "扫描进行中，索引正在重建，等扫描结束后再搜索";
-        return;
-    }
-    g_searchQuery = query;
-    g_hits.clear();
-    if (query.empty()) return;
-    if (g_searchMode == 1) {
-        std::string q = query;
-        if (!g_extFilter.empty()) {
+// 跨库检索要挨个打开每一份索引库。实测 27 份库 5.5 秒（C 盘那份 600 万文档占 4.1 秒），
+// 以前这段跑在 UI 线程里 —— 切一下「范围」界面就定住几秒，用户只能干等。
+// 现在界面只登记请求，后台线程算，结果下一帧取走；新请求用代号作废旧结果。
+struct SearchJob {
+    uint64_t gen = 0;
+    std::string query;
+    int  mode = 0;                    // 0 = 文件名，1 = 内容
+    bool allRoots = false;
+    std::string root;                 // 当前扫描根（内容模式要用）
+    std::set<std::string> extFilter;
+};
+
+struct SearchOut {
+    uint64_t gen = 0;
+    std::vector<db::Hit> hits;
+    std::string msg;                  // 状态栏那句「已在全部索引里搜到 N 条」
+    bool noIndex = false;             // 内容模式：当前目录没索引，右栏要出引导
+};
+
+static std::mutex              g_sMx;
+static std::condition_variable g_sCv;
+static SearchJob               g_sJob;
+static bool                    g_sPending = false;
+static uint64_t                g_sGen = 0;
+static bool                    g_sQuit = false;
+static SearchOut               g_sOut;          // 后台写、UI 取
+static bool                    g_sOutValid = false;
+static std::thread             g_sThread;
+static std::atomic<bool>       g_searchBusy{false};
+static std::atomic<bool>       g_sAbort{false};   // 关窗口时让后台检索提前收手
+static double                  g_sReqsAt = 0;   // 本次请求的提交时刻（显示用时）
+
+// 真正干活的部分：不碰任何界面状态，全部写进 out。
+static void DoSearch(const SearchJob& job, SearchOut& out) {
+    out.gen = job.gen;
+    if (job.query.empty()) return;
+
+    if (job.mode == 1) {
+        std::string q = job.query;
+        if (!job.extFilter.empty()) {
             q += " ext:";
             bool first = true;
-            for (const auto& e : g_extFilter) {
+            for (const auto& e : job.extFilter) {
                 std::string one = e;
                 if (!one.empty() && one[0] == '.') one.erase(one.begin());
                 if (!first) q += ",";
@@ -2043,65 +2082,131 @@ static void RunSearchNow(const std::string& query) {
                 first = false;
             }
         }
-        const std::string root = content::NormRoot(g_rootPath);
-        const bool here = content::HasIndex(root);
+        const bool here = content::HasIndex(job.root);
         // 没索引就直接搜 = 静默 0 条，用户只会以为"这功能是假的"。
         // 这里显式区分三种情况，并把用户推到"建立索引"那个按钮上。
         if (!here) {
-            if (g_searchAllRoots) {
-                // 全部都还没建过索引，等于什么都没有
-                g_contentNoIndex = content::ListIndexes().empty();
-                if (g_contentNoIndex) {
-                    g_lastCleanMsg = "还没有任何内容索引：先在右栏点「建立内容索引」";
-                    g_mode = 2;
+            if (job.allRoots) {
+                out.noIndex = content::IndexSnapshot().empty();
+                if (out.noIndex) {
+                    out.msg = "还没有任何内容索引：先在右栏点「建立内容索引」";
                     return;
                 }
             } else {
-                g_contentNoIndex = true;
-                g_lastCleanMsg = "「" + root + "」还没有内容索引：右栏点「建立内容索引」，"
-                                 "或把范围切到「所有已索引」";
-                g_mode = 2;
+                out.noIndex = true;
+                out.msg = "「" + job.root + "」还没有内容索引：右栏点「建立内容索引」，"
+                          "或把范围切到「所有已索引」";
                 return;
             }
         }
-        g_contentNoIndex = false;
-        if (g_searchAllRoots) {
-            g_hits = content::SearchAll(q, 400);
-            // 跨目录检索的结果可能落在当前扫描范围外，勾选删除前要能看出来
-            g_lastCleanMsg = g_hits.empty()
-                ? "所有已建索引的目录里都没有匹配「" + query + "」的内容"
-                : "已在全部索引里搜到 " + std::to_string((int)g_hits.size()) + " 条";
+        out.noIndex = false;
+        if (job.allRoots) {
+            out.hits = content::SearchAll(q, 400, &g_sAbort);
+            out.msg = out.hits.empty()
+                ? "所有已建索引的目录里都没有匹配「" + job.query + "」的内容"
+                : "已在全部索引里搜到 " + std::to_string((int)out.hits.size()) + " 条";
         } else {
-            g_hits = content::Search(root, q, 400);
+            out.hits = content::Search(job.root, q, 400, &g_sAbort);
         }
         return;
     }
+
     // ---- 文件名检索
-    if (g_searchAllRoots) {
-        g_hits = db::SearchAll(query, 400);
-        if (g_hits.empty()) g_lastCleanMsg = "所有已建索引的目录里都没有文件名包含「" + query + "」的项";
+    if (job.allRoots) {
+        out.hits = db::SearchAll(job.query, 400, &g_sAbort);
+        if (out.hits.empty())
+            out.msg = "所有已建索引的目录里都没有文件名包含「" + job.query + "」的项";
     } else {
-        std::string indexPath = db::IndexPathFor(g_rootPath);
+        const std::string indexPath = db::IndexPathFor(job.root);
         if (GetFileAttributesW(Utf8ToWide(indexPath).c_str()) == INVALID_FILE_ATTRIBUTES) {
-            g_lastCleanMsg = "「" + g_rootPath + "」还没扫描过，没有文件名索引";
+            out.msg = "「" + job.root + "」还没扫描过，没有文件名索引";
             return;
         }
-        db::OpenExisting(indexPath);
-        g_hits = db::Search(query, 400);
-        db::Close();
+        out.hits = db::SearchIn(indexPath, job.query, 400, &g_sAbort);
     }
-    if (!g_extFilter.empty()) {
-        g_hits.erase(std::remove_if(g_hits.begin(), g_hits.end(),
-                                    [](const db::Hit& h) {
-                                        std::string e = h.path;
-                                        const size_t dot = e.find_last_of('.');
-                                        if (dot == std::string::npos) return true;
-                                        e = e.substr(dot);
-                                        for (auto& c : e) c = (char)tolower((unsigned char)c);
-                                        return g_extFilter.count(e) == 0;
-                                    }),
-                     g_hits.end());
+    if (!job.extFilter.empty()) {
+        auto& hits = out.hits;
+        hits.erase(std::remove_if(hits.begin(), hits.end(),
+                                  [&](const db::Hit& h) {
+                                      std::string e = h.path;
+                                      const size_t dot = e.find_last_of('.');
+                                      if (dot == std::string::npos) return true;
+                                      e = e.substr(dot);
+                                      for (auto& c : e) c = (char)tolower((unsigned char)c);
+                                      return job.extFilter.count(e) == 0;
+                                  }),
+                   hits.end());
     }
+}
+
+static void SearchWorker() {
+    for (;;) {
+        SearchJob job;
+        {
+            std::unique_lock<std::mutex> lk(g_sMx);
+            g_sCv.wait(lk, [] { return g_sPending || g_sQuit; });
+            if (g_sQuit) return;
+            job = g_sJob;
+            g_sPending = false;
+        }
+        SearchOut out;
+        DoSearch(job, out);
+        if (g_sAbort.load()) return;
+        std::lock_guard<std::mutex> lk(g_sMx);
+        if (job.gen == g_sGen) {        // 期间没有更新的请求才认这份结果
+            g_sOut = std::move(out);
+            g_sOutValid = true;
+            g_searchBusy = false;
+        }
+    }
+}
+
+// 界面侧：登记一次检索，立刻返回。真正的耗时在 SearchWorker 里。
+static void RunSearchNow(const std::string& query) {
+    // 扫描线程正在用小 sqlite 连接写索引；这时读到的可能是半成品，
+    // 而且 index_*.db 正在被 .building 换名覆盖。
+    if (g_scanning.load()) {
+        g_lastCleanMsg = "扫描进行中，索引正在重建，等扫描结束后再搜索";
+        return;
+    }
+    g_searchQuery = query;
+    g_hits.clear();
+    g_contentNoIndex = false;
+    if (query.empty()) {
+        g_searchBusy = false;
+        return;
+    }
+
+    {
+        std::lock_guard<std::mutex> lk(g_sMx);
+        g_sJob.gen = ++g_sGen;
+        g_sJob.query = query;
+        g_sJob.mode = g_searchMode;
+        g_sJob.allRoots = g_searchAllRoots;
+        g_sJob.root = content::NormRoot(g_rootPath);
+        g_sJob.extFilter = g_extFilter;
+        g_sPending = true;
+    }
+    g_searchBusy = true;
+    g_sReqsAt = ImGui::GetTime();
+    if (!g_sThread.joinable()) g_sThread = std::thread(SearchWorker);
+    g_sCv.notify_one();
+}
+
+// 每帧调一次：后台算完了就把结果搬进 g_hits。
+static void PollSearch() {
+    SearchOut out;
+    {
+        std::lock_guard<std::mutex> lk(g_sMx);
+        if (!g_sOutValid) return;
+        out = std::move(g_sOut);
+        g_sOutValid = false;
+    }
+    if (out.gen != g_sGen) return;      // 已被更新的请求取代，丢掉
+    g_hits = std::move(out.hits);
+    g_contentNoIndex = out.noIndex;
+    if (!out.msg.empty()) g_lastCleanMsg = out.msg;
+    g_searchBusy = false;
 }
 
 // 当前左侧打开目录的完整路径。扫描中 g_entries 正在重建，只能退回扫描根。
@@ -2518,15 +2623,9 @@ static void DrawSearchScopeSwitch() {
 // 不提供这个入口的话，%LOCALAPPDATA% 里能悄悄堆出好几个 GB ——
 // 一个清理磁盘的工具自己占着系统盘，说不过去。
 static void DrawIndexManager() {
-    static std::vector<content::IndexInfo> list;
-    static double lastScan = -1e9;
-
-    // 收起来的时候别每帧读盘；只读一次，之后靠"展开"或 2 秒节流刷新
-    const double now = ImGui::GetTime();
-    if (list.empty() || now - lastScan > 2.0) {
-        list = content::ListIndexes();
-        lastScan = now;
-    }
+    // 走缓存：ListIndexes 要逐份打开库读 meta（27 份 ≈ 0.7 秒），
+    // 放绘制路径里就是每 2 秒卡 0.7 秒。建库/删库会把它标脏，这里自然重新读。
+    const std::vector<content::IndexInfo> list = content::IndexSnapshot();
 
     uint64_t total = 0;
     for (const auto& i : list) total += i.bytes;
@@ -2559,7 +2658,7 @@ static void DrawIndexManager() {
             if (content::DeleteIndexFile(idx.dbPath)) {
                 g_lastCleanMsg = "已删除索引：" + idx.root;
                 g_extListDirty = true;
-                lastScan = -1e9;
+                content::InvalidateIndexes();   // 下一帧重读，别把删掉的还列着
             }
         }
         if (busy) ImGui::EndDisabled();
@@ -2619,7 +2718,9 @@ static void DrawContentSearchTab() {
         ImGui::Dummy(ImVec2(0, 2));
     }
 
-    if (!hasHere && !(g_searchAllRoots && !content::ListIndexes().empty())) {
+    // 这份清单走缓存：以前每帧 ListIndexes()（0.7 秒），界面直接僵住
+    const auto idxList = content::IndexSnapshot();
+    if (!hasHere && !(g_searchAllRoots && !idxList.empty())) {
         ImGui::TextDisabled(g_searchAllRoots ? "还没有任何内容索引。"
                                               : "当前目录还没有内容索引。");
         ImGui::TextDisabled("只抽文本/代码、Office、PDF、图纸、三维模型；"
@@ -2717,6 +2818,13 @@ static void DrawContentSearchTab() {
         }
         ImGui::Dummy(ImVec2(0, 8));
         DrawIndexManager();
+        return;
+    }
+    if (g_searchBusy.load()) {
+        ImGui::TextDisabled("正在搜索…");
+        ImGui::ProgressBar(-1.0f * (float)ImGui::GetTime(), ImVec2(-1, 6), "");
+        ImGui::TextDisabled(g_searchAllRoots ? "逐个查所有已建索引的目录，先出结果先算完"
+                                             : "正在查当前目录的内容索引");
         return;
     }
     if (g_hits.empty()) {
@@ -2895,7 +3003,12 @@ static void DrawRightPanel() {
         DrawContentSearchTab();
     } else {
         DrawSearchScopeSwitch();
-        if (g_searchQuery.empty()) {
+        if (g_searchBusy.load() && !g_searchQuery.empty()) {
+            ImGui::TextDisabled("正在搜索…");
+            ImGui::ProgressBar(-1.0f * (float)ImGui::GetTime(), ImVec2(-1, 6), "");
+            ImGui::TextDisabled(g_searchAllRoots ? "逐个查所有已建索引的目录"
+                                                 : "正在查当前目录的文件名索引");
+        } else if (g_searchQuery.empty()) {
             EmptyState("还没有搜索", "在上面搜索框输入文件名，回车或点搜索。Ctrl+F 可以直接跳过去。");
         } else if (g_hits.empty()) {
             EmptyState("没有命中", g_searchAllRoots
@@ -3271,16 +3384,23 @@ static void DrawTopBar() {
     if (searchW < 180.0f) searchW = 180.0f;
     if (searchW > 300.0f) searchW = 300.0f;
     const float searchBtnW = 52.0f;
-    const float blockW = modeW + 8.0f + searchW + 8.0f + searchBtnW;
+    float blockW = modeW + 8.0f + searchW + 8.0f + searchBtnW;
     const float themeX = E - themeW;
     const float blockRight = themeX - 24.0f;
-    const float modeX = blockRight - blockW;
+    float modeX = blockRight - blockW;
 
     DrawLogo();
     ImGui::SameLine(0, 14);
 
     // ---- 位置组 ----
     const float browseW = 52.0f, scanW = 64.0f;
+    const float pauseW = 52.0f, stopW = 52.0f;
+    const bool scanningNow = g_scanning.load();
+    // 扫描中这一格是「暂停 + 结束」两颗（52+6+52 = 110），比平时的「扫描」
+    // 宽 46px。以前一律按 scanW 预留，多出来的 46px 就被搜索组盖住了
+    // —— 截图里「结束」只露出左边一条红边。
+    const float leftBtnW = scanningNow ? (pauseW + 6.0f + stopW) : scanW;
+    const float dividerW = scanningNow ? 0.0f : 24.0f;   // ToolbarDivider 两边各 10px
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(11, padY));
     ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
     ImGui::PushStyleColor(ImGuiCol_Border, g_ui.borderStrong);
@@ -3301,7 +3421,15 @@ static void DrawTopBar() {
 
     {
         const float pathX = ImGui::GetCursorPosX();
-        float pathW = modeX - 16.0f - (browseW + 8.0f + scanW) - pathX;
+        // 窗口太窄时先压搜索框，绝不让左边这组钻到搜索框底下
+        const float needModeX = pathX + 160.0f + 8.0f + browseW + 8.0f +
+                                leftBtnW + dividerW + 12.0f;
+        if (modeX < needModeX) {
+            searchW = std::max(140.0f, searchW - (needModeX - modeX));
+            blockW = modeW + 8.0f + searchW + 8.0f + searchBtnW;
+            modeX = blockRight - blockW;
+        }
+        float pathW = modeX - 16.0f - (browseW + 8.0f + leftBtnW + dividerW) - pathX;
         if (pathW < 160.0f) pathW = 160.0f;
         ImGui::SetNextItemWidth(pathW);
     }
@@ -3319,16 +3447,16 @@ static void DrawTopBar() {
     }
     ImGui::SameLine(0, 8);
 
-    if (g_scanning.load()) {
-        if (GhostButton(g_paused.load() ? "继续" : "暂停", ImVec2(52, kCtrlH)))
+    if (scanningNow) {
+        if (GhostButton(g_paused.load() ? "继续" : "暂停", ImVec2(pauseW, kCtrlH)))
             g_paused = !g_paused.load();
         ImGui::SameLine(0, 6);
-        if (DangerButton(g_stopReq.load() ? "结束中" : "结束", ImVec2(52, kCtrlH))) g_stopReq = true;
+        if (DangerButton(g_stopReq.load() ? "结束中" : "结束", ImVec2(stopW, kCtrlH))) g_stopReq = true;
     } else {
         if (PrimaryButton("扫描", ImVec2(scanW, kCtrlH))) StartScan(g_pathBuf);
     }
 
-    if (!g_scanning.load()) ToolbarDivider(kCtrlH - 10);
+    if (!scanningNow) ToolbarDivider(kCtrlH - 10);
 
     // ---- 搜索组（按算好的绝对位置摆放，不受前面宽度影响）----
     ImGui::SameLine(std::max(ImGui::GetCursorPosX() + 12.0f, modeX));
@@ -3383,6 +3511,9 @@ static void DrawUI() {
                  ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                  ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
                  ImGuiWindowFlags_NoBringToFrontOnFocus);
+
+    // 后台检索算完了就把结果搬进来（每帧一次，几乎零成本）
+    PollSearch();
 
     // 清理线程结束后统一收尾（g_selected 等状态只能在 UI 线程改）
     if (g_cleanFinish.exchange(false)) {
@@ -3734,6 +3865,16 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
         g_swapChain->Present(0, 0);
         Sleep(g_scanning.load() ? 8 : 40);
     }
+
+    // 后台检索线程收尾：不 join 的话它可能在静态对象析构时还在跑。
+    // 先置中止标志，正在跨库检索也会在一个库查完后停下，不至于关窗口卡几秒。
+    g_sAbort = true;
+    {
+        std::lock_guard<std::mutex> lk(g_sMx);
+        g_sQuit = true;
+    }
+    g_sCv.notify_all();
+    if (g_sThread.joinable()) g_sThread.join();
 
     ImGui_ImplDX11_Shutdown();
     ImGui_ImplWin32_Shutdown();

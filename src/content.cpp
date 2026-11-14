@@ -468,9 +468,12 @@ std::vector<IndexInfo> ListIndexes() {
             if (!docs.empty()) {
                 info.docs = atoll(docs.c_str());
             } else {
+                // 老库没写 docs 元数据。以前这里退化成 COUNT(*)，
+                // 600 万行的表一次 600 ms，27 份库就是 0.7 秒 ——
+                // 画一帧就要 0.7 秒，界面等于冻住。改成取主键最大值：
+                // 走 b-tree 尾部，O(log n)，数字略偏大（删过行的库），够显示用。
                 sqlite3_stmt* st = nullptr;
-                if (sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM docs WHERE err=0",
-                                       -1, &st, nullptr) == SQLITE_OK) {
+                if (sqlite3_prepare_v2(db, "SELECT MAX(id) FROM docs", -1, &st, nullptr) == SQLITE_OK) {
                     if (sqlite3_step(st) == SQLITE_ROW) info.docs = sqlite3_column_int64(st, 0);
                     sqlite3_finalize(st);
                 }
@@ -490,12 +493,41 @@ std::vector<IndexInfo> ListIndexes() {
     return out;
 }
 
+// ---- 索引清单缓存 ----------------------------------------------------------
+//
+// ListIndexes() 逐个 sqlite3_open_v2 读 meta。实测 27 份库 0.74 秒。
+// 右栏判断"有没有别的目录建过索引"时每帧都要这个答案，直接调就是每帧冻 0.74 秒，
+// 表现出来就是"切到所有已索引，界面卡住不动了"。
+std::mutex           g_idxMx;
+std::vector<IndexInfo> g_idxCache;
+bool                 g_idxDirty = true;
+
+std::vector<IndexInfo> IndexSnapshot() {
+    {
+        std::lock_guard<std::mutex> lk(g_idxMx);
+        if (!g_idxDirty) return g_idxCache;
+    }
+    std::vector<IndexInfo> fresh = ListIndexes();   // 慢，放在锁外
+    {
+        std::lock_guard<std::mutex> lk(g_idxMx);
+        g_idxCache = fresh;
+        g_idxDirty = false;
+        return g_idxCache;
+    }
+}
+
+void InvalidateIndexes() {
+    std::lock_guard<std::mutex> lk(g_idxMx);
+    g_idxDirty = true;
+}
+
 bool DeleteIndexFile(const std::string& dbPath) {
     const std::wstring w = extract::ToWide(dbPath);
     if (GetFileAttributesW(w.c_str()) == INVALID_FILE_ATTRIBUTES) return false;
     const BOOL ok = DeleteFileW(w.c_str());
     DeleteFileW((w + L"-wal").c_str());
     DeleteFileW((w + L"-shm").c_str());
+    InvalidateIndexes();
     return ok != 0;
 }
 
@@ -734,6 +766,7 @@ void Build(const std::string& root, const std::atomic<bool>& cancel) {
     sqlite3_close(db);
 
     if (cancel.load()) SetNotice("索引已停止，已完成的部分保留，下次点「增量更新」接着做");
+    InvalidateIndexes();   // 新库/新体积要反映到「索引管理」和范围判断里
     g_busy = false;
 }
 
@@ -1012,7 +1045,15 @@ bool IsRegexQuery(const std::string& q, std::string& pattern) {
     return false;
 }
 
-std::vector<db::Hit> Search(const std::string& root, const std::string& query, int limit) {
+// SQLite 每执行 ~2000 条虚拟机指令回调一次；返回非 0 就中断当前语句。
+// 跨库检索动辄 4 秒（C 盘那份 600 万文档），关窗口/换关键词时靠它立刻撒手，
+// 否则退出要等整个查询跑完。
+static int SearchCancelCb(void* p) {
+    return (p && static_cast<const std::atomic<bool>*>(p)->load()) ? 1 : 0;
+}
+
+std::vector<db::Hit> Search(const std::string& root, const std::string& query, int limit,
+                            const std::atomic<bool>* cancel) {
     std::vector<db::Hit> out;
     if (query.empty()) return out;
     const std::string norm = NormRoot(root);
@@ -1029,6 +1070,7 @@ std::vector<db::Hit> Search(const std::string& root, const std::string& query, i
             if (db) sqlite3_close(db);
             return out;
         }
+        if (cancel) sqlite3_progress_handler(db, 2000, SearchCancelCb, (void*)cancel);
         sqlite3_create_function(db, "regexp", 2, SQLITE_UTF8, nullptr, RegexpFunc, nullptr, nullptr);
         sqlite3_exec(db, "PRAGMA cache_size=-32768;", nullptr, nullptr, nullptr);
 
@@ -1110,6 +1152,7 @@ std::vector<db::Hit> Search(const std::string& root, const std::string& query, i
         if (db) sqlite3_close(db);
         return out;
     }
+    if (cancel) sqlite3_progress_handler(db, 2000, SearchCancelCb, (void*)cancel);
     sqlite3_exec(db, "PRAGMA cache_size=-16384;", nullptr, nullptr, nullptr);
 
     // 过滤条件用显式编号（从 10 起）：匿名 ? 会跟后面的 ?3（LIMIT）撞号，
@@ -1265,14 +1308,16 @@ std::vector<db::Hit> Search(const std::string& root, const std::string& query, i
 // 跨所有已建索引搜索。
 // 这里不把多份库 ATTACH 起来查（FTS5 虚拟表跨库 join 很容易踩坑），
 // 而是每份库各查一次再合并：库的数量是"用户扫过几个目录"级别，几十份顶天了。
-std::vector<db::Hit> SearchAll(const std::string& query, int limit) {
+std::vector<db::Hit> SearchAll(const std::string& query, int limit,
+                              const std::atomic<bool>* cancel) {
     std::vector<db::Hit> merged;
     if (query.empty()) return merged;
 
     std::unordered_map<std::string, size_t> byPath;   // 小写路径 → merged 下标
-    for (const IndexInfo& idx : ListIndexes()) {
+    for (const IndexInfo& idx : IndexSnapshot()) {
+        if (cancel && cancel->load()) break;         // 关窗口/换关键词：别再把剩下的库查完
         if (idx.root.empty() || idx.root == "(未知)") continue;
-        std::vector<db::Hit> part = Search(idx.root, query, limit);
+        std::vector<db::Hit> part = Search(idx.root, query, limit, cancel);
         for (auto& h : part) {
             std::string key = h.path;
             for (auto& c : key) c = (char)tolower((unsigned char)c);

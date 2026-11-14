@@ -283,15 +283,24 @@ bool IsFresh(const std::string& root, int maxAgeHours) {
     return age >= 0 && age < (long long)maxAgeHours * 3600;
 }
 
-std::vector<Hit> Search(const std::string& query, int limit) {
+// 只读查一份库，自开连接、自关连接、不碰任何全局状态。
+// 这样检索可以放在后台线程跑：扫描线程正在写的那套全局连接（g_db）不受影响。
+// SQLite 每 ~2000 步回调一次；返回非 0 中断语句。关窗口/换词时靠它立刻撒手。
+static int SearchCancelCb(void* p) {
+    return (p && static_cast<const std::atomic<bool>*>(p)->load()) ? 1 : 0;
+}
+
+std::vector<Hit> SearchIn(const std::string& dbPath, const std::string& query, int limit,
+                          const std::atomic<bool>* cancel) {
     std::vector<Hit> out;
     std::string lower;
     for (char c : query) lower.push_back((char)tolower((unsigned char)c));
-    if (lower.empty() || g_finalPath.empty()) return out;
+    if (lower.empty() || dbPath.empty()) return out;
 
     sqlite3* tmp = nullptr;
-    if (sqlite3_open_v2(g_finalPath.c_str(), &tmp, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK)
+    if (sqlite3_open_v2(dbPath.c_str(), &tmp, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK)
         return out;
+    if (cancel) sqlite3_progress_handler(tmp, 2000, SearchCancelCb, (void*)cancel);
     sqlite3_exec(tmp, "PRAGMA cache_size=-16384;", nullptr, nullptr, nullptr);
 
     // 祖先缓存：400 条结果的父链大量重叠，不缓存会重复查几千次
@@ -370,6 +379,10 @@ std::vector<Hit> Search(const std::string& query, int limit) {
     return out;
 }
 
+std::vector<Hit> Search(const std::string& query, int limit) {
+    return SearchIn(g_finalPath, query, limit);
+}
+
 // 打开已有索引做只读查询（搜索前调用）
 bool OpenExisting(const std::string& dbPath) {
     Close();
@@ -403,16 +416,16 @@ std::vector<IndexInfo> ListIndexes() {
 
 // 文件名索引也是一根目录一份库。换目录就搜不到别处，和内容检索是同一个毛病。
 // 这里把每份库都查一遍再合并 —— 库的数量是"扫过几个目录"级别，几十份顶天了。
-std::vector<Hit> SearchAll(const std::string& query, int limit) {
+std::vector<Hit> SearchAll(const std::string& query, int limit,
+                           const std::atomic<bool>* cancel) {
     std::vector<Hit> merged;
     if (query.empty()) return merged;
 
     std::unordered_map<std::string, size_t> byPath;
     for (const IndexInfo& idx : ListIndexes()) {
+        if (cancel && cancel->load()) break;
         if (idx.root == "(未知)") continue;
-        if (!OpenExisting(idx.dbPath)) { Close(); continue; }
-        std::vector<Hit> part = Search(query, limit);
-        Close();
+        std::vector<Hit> part = SearchIn(idx.dbPath, query, limit, cancel);
         for (auto& h : part) {
             if (h.path.empty()) continue;
             std::string key = NormCase(h.path);
