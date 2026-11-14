@@ -283,7 +283,7 @@ static UiTheme MakeTheme(bool dark) {
         t.success       = RGBA(52, 211, 153);
         t.warning       = RGBA(251, 191, 36);
         t.danger        = RGBA(251, 113, 133);
-        t.canvas        = RGBA(10, 13, 28, 0.45f);         // 方块图画布：半透明暗纱
+        t.canvas        = RGBA(26, 27, 31);                // 方块图画布：比页底深一档
         t.titleOverlay  = RGBA(0, 0, 0, 0.55f);
         t.sizeOverlay   = RGBA(0, 0, 0, 0.34f);
         t.blockText     = RGBA(240, 242, 250);
@@ -294,7 +294,7 @@ static UiTheme MakeTheme(bool dark) {
     } else {
         // 亮色：页面用浅灰，卡片用纯白，边框压到几乎看不见
         t.windowBg      = RGBA(238, 240, 251, 0.0f);       // 透明：淡紫/淡青光斑透上来
-        t.childBg       = RGBA(255, 255, 255, 0.55f);      // 玻璃面板（亮色要更实才保文字对比度）
+        t.childBg       = RGBA(255, 255, 255, 0.72f);      // 玻璃面板（纯白底上略微分层）
         t.cardBg        = RGBA(255, 255, 255, 0.72f);
         t.cardHover     = RGBA(255, 255, 255, 0.92f);
         t.cardSelected  = RGBA(139, 92, 246, 0.16f);
@@ -312,7 +312,7 @@ static UiTheme MakeTheme(bool dark) {
         t.success       = RGBA(22, 122, 66);
         t.warning       = RGBA(196, 108, 12);
         t.danger        = RGBA(202, 46, 40);
-        t.canvas        = RGBA(238, 240, 251, 0.50f);
+        t.canvas        = RGBA(241, 243, 244);             // 方块图画布：Google 灰 50
         t.titleOverlay  = RGBA(255, 255, 255, 0.80f);
         t.sizeOverlay   = RGBA(255, 255, 255, 0.64f);
         t.blockText     = RGBA(26, 28, 32);
@@ -342,36 +342,8 @@ static void ApplyDarkTitleBar() {
 
 // ============================================================ 液态玻璃材质
 //
-// 玻璃的三个要素在这里：
-//   1. 极光光斑 —— 面板后面必须有"在动的彩色"，玻璃才有折射的内容
-//   2. 半透明面板 —— token 全部压到 0.05~0.30 不透明度
-//   3. GlassFx —— 顶部光泽带 + 上下沿明暗线，模拟玻璃边缘的镜面反光
-
-static void DrawAurora(ImDrawList* dl, const ImVec2& vpMin, const ImVec2& vpSize) {
-    struct Blob { ImVec2 rel; float radius; ImU32 col; float phase; float speed; };
-    static const Blob blobs[] = {
-        { {0.10f, 0.04f}, 380.0f, IM_COL32(124,  58, 237, 30), 0.0f, 0.10f },  // 紫
-        { {0.94f, 0.30f}, 430.0f, IM_COL32( 14, 165, 233, 26), 2.1f, 0.13f },  // 青
-        { {0.36f, 0.96f}, 400.0f, IM_COL32(217,  70, 239, 22), 4.2f, 0.08f },  // 品红
-        { {0.82f, 0.86f}, 300.0f, IM_COL32(245, 158,  11, 16), 1.2f, 0.11f },  // 琥珀
-    };
-    const float dim = g_darkTheme ? 1.0f : 0.5f;   // 亮色主题光斑减半，别把文字衬糊
-    const float t = (float)ImGui::GetTime();
-    for (const Blob& b : blobs) {
-        // 慢速漂移：玻璃后面的"内容"在动，玻璃才像玻璃
-        const float ox = sinf(t * b.speed + b.phase) * 60.0f;
-        const float oy = cosf(t * b.speed * 0.8f + b.phase) * 45.0f;
-        const ImVec2 c(vpMin.x + b.rel.x * vpSize.x + ox,
-                       vpMin.y + b.rel.y * vpSize.y + oy);
-        // ImGui 没有径向渐变原语：同心圆叠出来，二次衰减让边缘更柔
-        for (int i = 16; i >= 1; --i) {
-            const float f = (float)i / 16.0f;
-            const int a = (int)((float)(b.col >> IM_COL32_A_SHIFT & 0xFF) * f * f * dim);
-            dl->AddCircleFilled(c, b.radius * f,
-                                (b.col & ~IM_COL32_A_MASK) | (ImU32(a) << IM_COL32_A_SHIFT), 48);
-        }
-    }
-}
+// 背景是纯色（暗 #202124 = Chrome 暗色页底灰 / 亮 = 纯白），
+// 玻璃感只靠三件事：半透明面板 token、GlassFx 镜面高光、胶囊轮廓。
 
 // 画在刚结束的 ItemRect 上：顶部光泽带 + 上亮下暗两道边。
 // 按钮填色之后调一下，实心按钮立刻有"玻璃胶囊"的体积感。
@@ -3697,7 +3669,7 @@ static void DrawTopBar() {
         const float y0 = p0.y - 6.0f, y1 = p0.y + kCtrlH + 8.0f;
         // 暗色用暗纱、亮色用白纱：玻璃感靠上沿高光表达，文字对比度靠纱罩保
         dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1),
-                          g_darkTheme ? IM_COL32(8, 11, 24, 150) : IM_COL32(255, 255, 255, 150),
+                          g_darkTheme ? IM_COL32(255, 255, 255, 14) : IM_COL32(255, 255, 255, 150),
                           (y1 - y0) * 0.5f);
         dl->AddRectFilled(ImVec2(x0, y0 + 1), ImVec2(x1, y0 + 1 + (y1 - y0) * 0.45f),
                           IM_COL32(255, 255, 255, g_darkTheme ? 16 : 70),
@@ -3846,14 +3818,13 @@ static void DrawUI() {
                  ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
                  ImGuiWindowFlags_NoBringToFrontOnFocus);
 
-    // 页面底色铺一层不透明的（清屏色只决定第一帧），极光画在它上面，
-    // 玻璃面板透出来的 = 底色 + 光斑。亮色主题若没有这层，透出来的就是黑底。
+    // 页面底色铺一层不透明的（清屏色只决定第一帧）：
+    // 暗 = Chrome 暗色的页底灰 #202124，亮 = 纯白。
     {
         ImDrawList* dl = ImGui::GetWindowDrawList();
         const ImVec2 vpMax(vp->WorkPos.x + vp->WorkSize.x, vp->WorkPos.y + vp->WorkSize.y);
         dl->AddRectFilled(vp->WorkPos, vpMax,
-                          g_darkTheme ? IM_COL32(10, 13, 28, 255) : IM_COL32(238, 240, 251, 255));
-        DrawAurora(dl, vp->WorkPos, vp->WorkSize);
+                          g_darkTheme ? IM_COL32(32, 33, 36, 255) : IM_COL32(255, 255, 255, 255));
     }
 
     // 后台检索算完了就把结果搬进来（每帧一次，几乎零成本）
@@ -4202,7 +4173,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
         SpaceSift_ImeFrame();
         ImGui::Render();
 
-        const float clear[4] = {0x0a / 255.0f, 0x0d / 255.0f, 0x1c / 255.0f, 1.0f};
+        const float clear[4] = {0x20 / 255.0f, 0x21 / 255.0f, 0x24 / 255.0f, 1.0f};
         g_pd3dContext->OMSetRenderTargets(1, &g_mainRTV, nullptr);
         g_pd3dContext->ClearRenderTargetView(g_mainRTV, clear);
         ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
