@@ -1,21 +1,50 @@
-"""打 v2.0.6 便携包 + exe-only 包 + SHA256SUMS。"""
-import hashlib, os, shutil, zipfile
+"""打便携包 + exe-only 包 + SHA256SUMS。
 
-ROOT = r"C:\Users\ALICE\dev\SpaceSift-Native"
+版本号从 src/version.h 读，不在这里再写一遍（之前 README 2.0.0、发行页 2.1.1、
+脚本注释里 2.0.6，全靠手改总会漏）。
+
+缺依赖直接报错退出，而不是打一个"看起来完整、但 PDF/OCR 用不了"的包 ——
+exe-only 包允许缺 dll，因为它本来就不带；便携包必须齐全。
+"""
+import hashlib
+import os
+import re
+import shutil
+import sys
+import zipfile
+
+ROOT = os.path.dirname(os.path.abspath(__file__))
 DIST = os.path.join(ROOT, "dist")
 PKG = os.path.join(ROOT, "packaging")
 OUT = os.path.join(ROOT, "build", "pkg")
-VER = "2.1.1"
+
+
+def version():
+    src = open(os.path.join(ROOT, "src", "version.h"), encoding="utf-8").read()
+    m = re.search(r'#define\s+SPACESIFT_VERSION\s+"([^"]+)"', src)
+    if not m:
+        sys.exit("src/version.h 里找不到 SPACESIFT_VERSION")
+    return m.group(1)
+
+
+VER = version()
 NAME = f"SpaceSift-{VER}"
+
+# 便携包必须齐全：主程序 + PDF + DWG + OCR 语言包
+REQUIRED = ["SpaceSift.exe", "pdfium.dll", "dwg2dxf.exe", "libredwg-0.dll",
+            "libiconv-2.dll"]
+missing = [f for f in REQUIRED if not os.path.isfile(os.path.join(DIST, f))]
+if not os.path.isdir(os.path.join(DIST, "tessdata")):
+    missing.append("tessdata/")
+if missing:
+    sys.exit("dist 缺依赖，先跑 build.bat 收集：" + ", ".join(missing))
 
 if os.path.isdir(OUT):
     shutil.rmtree(OUT)
 stage = os.path.join(OUT, NAME)
 os.makedirs(stage)
 
-# 便携包内容
-for f in ["SpaceSift.exe", "dwg2dxf.exe", "libiconv-2.dll", "libredwg-0.dll",
-          "pdfium.dll", "USAGE.md"]:
+for f in REQUIRED + ["USAGE.md"]:
     shutil.copy2(os.path.join(DIST, f), os.path.join(stage, f))
 shutil.copytree(os.path.join(DIST, "tessdata"), os.path.join(stage, "tessdata"))
 for f in ["install.bat", "install.ps1", "THIRD-PARTY-NOTICES.md"]:

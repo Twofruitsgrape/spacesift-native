@@ -377,4 +377,60 @@ bool OpenExisting(const std::string& dbPath) {
     return sqlite3_open_v2(dbPath.c_str(), &g_db, SQLITE_OPEN_READONLY, nullptr) == SQLITE_OK;
 }
 
+std::vector<IndexInfo> ListIndexes() {
+    std::vector<IndexInfo> out;
+    const std::string dir = DataDir();
+    if (dir.empty()) return out;
+
+    std::wstring pattern = WidenUtf8(dir) + L"\\index_*.db";
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW(pattern.c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) return out;
+    do {
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+        IndexInfo info;
+        info.dbPath = dir + "\\" + NarrowW(fd.cFileName);
+        info.root = NormCase(MetaValue(info.dbPath, "root"));
+        info.builtAt = atoll(MetaValue(info.dbPath, "built_at").c_str());
+        info.files = atoll(MetaValue(info.dbPath, "files").c_str());
+        info.partial = MetaValue(info.dbPath, "partial") == "1";
+        if (info.root.empty()) info.root = "(未知)";
+        out.push_back(std::move(info));
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    return out;
+}
+
+// 文件名索引也是一根目录一份库。换目录就搜不到别处，和内容检索是同一个毛病。
+// 这里把每份库都查一遍再合并 —— 库的数量是"扫过几个目录"级别，几十份顶天了。
+std::vector<Hit> SearchAll(const std::string& query, int limit) {
+    std::vector<Hit> merged;
+    if (query.empty()) return merged;
+
+    std::unordered_map<std::string, size_t> byPath;
+    for (const IndexInfo& idx : ListIndexes()) {
+        if (idx.root == "(未知)") continue;
+        if (!OpenExisting(idx.dbPath)) { Close(); continue; }
+        std::vector<Hit> part = Search(query, limit);
+        Close();
+        for (auto& h : part) {
+            if (h.path.empty()) continue;
+            std::string key = NormCase(h.path);
+            auto it = byPath.find(key);
+            if (it == byPath.end()) {
+                byPath[key] = merged.size();
+                merged.push_back(std::move(h));
+            } else if (h.size > merged[it->second].size) {
+                merged[it->second] = std::move(h);
+            }
+        }
+    }
+
+    std::stable_sort(merged.begin(), merged.end(), [](const Hit& a, const Hit& b) {
+        return a.size > b.size;
+    });
+    if (limit > 0 && (int)merged.size() > limit) merged.resize((size_t)limit);
+    return merged;
+}
+
 }  // namespace db

@@ -42,6 +42,7 @@
 #include "extract.h"
 #include "rules.h"
 #include "ime_win32.h"
+#include "version.h"
 
 // ============================================================ 扫描结果
 
@@ -135,6 +136,12 @@ static std::string          g_searchQuery;
 static int                 g_searchMode = 0;
 static std::atomic<bool>   g_contentBusy{false};   // UI 侧镜像，防止重复起线程
 static std::atomic<bool>   g_contentCancel{false};
+// 检索范围：false = 只搜当前扫描目录，true = 搜所有建过索引的目录。
+// 以前只有前者，换个文件夹就等于"搜不到"，看着像假功能。
+// 文件名和内容两种模式共用这一个开关。
+static bool g_searchAllRoots = false;
+// 内容模式下没索引就搜索时置位，右栏据此显示"先建索引"的引导
+static bool g_contentNoIndex = false;
 static std::set<std::string> g_extFilter;   // 后缀筛选（空 = 全部）
 static std::vector<content::ExtCount> g_extList;   // 弹窗里的后缀列表（缓存）
 static bool g_extListDirty = true;
@@ -177,6 +184,8 @@ static ImVec4 RGBA(int r, int g, int b, float a = 1.0f) {
 }
 static ImU32 ThemeColor(const ImVec4& c) { return ImGui::GetColorU32(c); }
 static bool InCurrentDir(const std::string& path);   // 定义在右栏卡片区，前面清理要用
+static bool PathUnder(const std::string& path, const std::string& dir);
+static int  g_cleanOutOfScope = 0;   // 上一次清理被范围校验挡掉的项数
 static std::string g_pendingScan;     // 右键「从这里开始扫描」选中的路径
 static std::string g_rootPath = "C:\\";
 static std::string g_ctxPath;         // 当前右键菜单目标路径
@@ -407,6 +416,17 @@ static bool LoadThemeSetting() {
 
 static void SaveThemeSetting() {
     WritePrivateProfileStringW(L"ui", L"theme", g_darkTheme ? L"dark" : L"light",
+                               SettingsPath().c_str());
+}
+
+static bool LoadSearchScopeSetting() {
+    wchar_t buf[32] = {0};
+    GetPrivateProfileStringW(L"ui", L"search_scope", L"current", buf, 31, SettingsPath().c_str());
+    return wcscmp(buf, L"all") == 0;
+}
+
+static void SaveSearchScopeSetting() {
+    WritePrivateProfileStringW(L"ui", L"search_scope", g_searchAllRoots ? L"all" : L"current",
                                SettingsPath().c_str());
 }
 
@@ -1386,8 +1406,13 @@ static uint64_t DeleteTree(const std::string& path, int* errors) {
 static std::vector<std::string> CollectCleanPaths() {
     std::vector<std::string> paths;
     std::set<std::string> seen;
+    int outOfScope = 0;
     auto add = [&](const std::string& p) {
-        if (p.empty() || rules::IsProtected(p)) return;
+        if (p.empty()) return;
+        // 扫描范围外的一律不删：跨目录检索的结果、旧索引里别的目录的记录，
+        // 都可能出现在列表里。README 写着"只处理扫描范围内的路径"，得让它成立。
+        if (!PathUnder(p, g_rootPath)) { ++outOfScope; return; }
+        if (rules::IsProtected(p)) return;
         if (seen.insert(p).second) paths.push_back(p);
     };
 
@@ -1404,6 +1429,7 @@ static std::vector<std::string> CollectCleanPaths() {
     }
     for (auto& kv : g_deepSelected) add(kv.first);
     for (auto& kv : g_hitSelected) add(kv.first);
+    g_cleanOutOfScope = outOfScope;
     return paths;
 }
 
@@ -1424,8 +1450,15 @@ static void StartClean() {
     if (g_cleaning.load()) return;
     auto paths = CollectCleanPaths();
     if (paths.empty()) {
-        g_lastCleanMsg = "没有可删除的项（可能都不在当前扫描范围内）";
+        g_lastCleanMsg = g_cleanOutOfScope > 0
+            ? "选中项都不在当前扫描范围内，已全部跳过（先扫描它所在的目录）"
+            : "没有可删除的项（可能都不在当前扫描范围内）";
         return;
+    }
+    if (g_cleanOutOfScope > 0) {
+        // 但这句会被"已清理"覆盖，所以真正的说明放在收尾里
+        g_lastCleanMsg = "已跳过 " + std::to_string(g_cleanOutOfScope) +
+                         " 项范围外的路径，只删当前扫描范围内的";
     }
     g_cleanFreed = 0;
     g_cleanErrors = 0;
@@ -1997,7 +2030,6 @@ static void RunSearchNow(const std::string& query) {
     g_hits.clear();
     if (query.empty()) return;
     if (g_searchMode == 1) {
-        // 内容索引是独立库；没建过就直接返回空，由右栏引导去建
         std::string q = query;
         if (!g_extFilter.empty()) {
             q += " ext:";
@@ -2010,14 +2042,53 @@ static void RunSearchNow(const std::string& query) {
                 first = false;
             }
         }
-        g_hits = content::Search(g_rootPath, q, 400);
+        const std::string root = content::NormRoot(g_rootPath);
+        const bool here = content::HasIndex(root);
+        // 没索引就直接搜 = 静默 0 条，用户只会以为"这功能是假的"。
+        // 这里显式区分三种情况，并把用户推到"建立索引"那个按钮上。
+        if (!here) {
+            if (g_searchAllRoots) {
+                // 全部都还没建过索引，等于什么都没有
+                g_contentNoIndex = content::ListIndexes().empty();
+                if (g_contentNoIndex) {
+                    g_lastCleanMsg = "还没有任何内容索引：先在右栏点「建立内容索引」";
+                    g_mode = 2;
+                    return;
+                }
+            } else {
+                g_contentNoIndex = true;
+                g_lastCleanMsg = "「" + root + "」还没有内容索引：右栏点「建立内容索引」，"
+                                 "或把范围切到「所有已索引」";
+                g_mode = 2;
+                return;
+            }
+        }
+        g_contentNoIndex = false;
+        if (g_searchAllRoots) {
+            g_hits = content::SearchAll(q, 400);
+            // 跨目录检索的结果可能落在当前扫描范围外，勾选删除前要能看出来
+            g_lastCleanMsg = g_hits.empty()
+                ? "所有已建索引的目录里都没有匹配「" + query + "」的内容"
+                : "已在全部索引里搜到 " + std::to_string((int)g_hits.size()) + " 条";
+        } else {
+            g_hits = content::Search(root, q, 400);
+        }
         return;
     }
-    std::string indexPath = db::IndexPathFor(g_rootPath);
-    if (GetFileAttributesW(Utf8ToWide(indexPath).c_str()) == INVALID_FILE_ATTRIBUTES) return;
-    db::OpenExisting(indexPath);
-    g_hits = db::Search(query, 400);
-    db::Close();
+    // ---- 文件名检索
+    if (g_searchAllRoots) {
+        g_hits = db::SearchAll(query, 400);
+        if (g_hits.empty()) g_lastCleanMsg = "所有已建索引的目录里都没有文件名包含「" + query + "」的项";
+    } else {
+        std::string indexPath = db::IndexPathFor(g_rootPath);
+        if (GetFileAttributesW(Utf8ToWide(indexPath).c_str()) == INVALID_FILE_ATTRIBUTES) {
+            g_lastCleanMsg = "「" + g_rootPath + "」还没扫描过，没有文件名索引";
+            return;
+        }
+        db::OpenExisting(indexPath);
+        g_hits = db::Search(query, 400);
+        db::Close();
+    }
     if (!g_extFilter.empty()) {
         g_hits.erase(std::remove_if(g_hits.begin(), g_hits.end(),
                                     [](const db::Hit& h) {
@@ -2282,7 +2353,7 @@ static void EmptyState(const char* title, const char* body = nullptr) {
 // 让复选框盖在上面 —— 这样点勾选框只切换勾选，点别处才触发整行。
 static bool RowCard(const char* id, const std::string& title, const std::string& right,
                     bool* checked, const char* badge, const std::string& tooltip,
-                    const std::string& subtitle = "") {
+                    const std::string& subtitle = "", bool checkable = true) {
     ImGui::PushID(id);
 
     const float rowH = 38.0f;
@@ -2312,7 +2383,20 @@ static bool RowCard(const char* id, const std::string& title, const std::string&
 
     // 自绘勾选框
     ImGui::SetCursorScreenPos(ImVec2(p0.x + pad, p0.y + (rowH - 16.0f) * 0.5f));
-    ThemeCheckbox("##chk", checked, 16.0f);
+    if (checkable) {
+        ThemeCheckbox("##chk", checked, 16.0f);
+    } else {
+        // 不在当前扫描范围内：不给勾选框，画一把小锁，点了也不加入待清理
+        ImGui::Dummy(ImVec2(16.0f, 16.0f));
+        ImDrawList* l = ImGui::GetWindowDrawList();
+        const ImVec2 q(p0.x + pad, p0.y + (rowH - 16.0f) * 0.5f);
+        l->AddRect(ImVec2(q.x + 3, q.y + 8), ImVec2(q.x + 13, q.y + 15),
+                   ThemeColor(g_ui.textFaint), 2.0f, 0, 1.2f);
+        l->AddBezierCubic(ImVec2(q.x + 5, q.y + 8), ImVec2(q.x + 5, q.y + 3),
+                          ImVec2(q.x + 11, q.y + 3), ImVec2(q.x + 11, q.y + 8),
+                          ThemeColor(g_ui.textFaint), 1.2f);
+        rowClicked = false;
+    }
 
     float textY = p0.y + (rowH - ImGui::GetTextLineHeight()) * 0.5f;
     std::string rs = right;
@@ -2333,10 +2417,14 @@ static bool RowCard(const char* id, const std::string& title, const std::string&
     ImGui::TextUnformatted(title.c_str());
     cx += ImGui::CalcTextSize(title.c_str()).x;
     if (badge && badge[0]) {
-        cx += 8.0f;
-        ImGui::SetCursorScreenPos(ImVec2(cx, textY));
-        ImGui::TextColored(g_ui.warning, "%s", badge);
-        cx += ImGui::CalcTextSize(badge).x;
+        // 放不下就干脆不画：画一半被裁掉比不画更难看（长文件名时常见）
+        const float bw = ImGui::CalcTextSize(badge).x;
+        if (cx + 8.0f + bw <= clipMax) {
+            cx += 8.0f;
+            ImGui::SetCursorScreenPos(ImVec2(cx, textY));
+            ImGui::TextColored(g_ui.warning, "%s", badge);
+            cx += bw;
+        }
     }
     if (!subtitle.empty() && cx + 12 < clipMax) {
         ImGui::PushFont(g_fontSmall, 0.0f);
@@ -2404,6 +2492,81 @@ static void StartContentIndex() {
     }).detach();
 }
 
+// 范围切换：当前扫描目录 / 所有建过索引的目录。
+// 这是"换个文件夹就搜不到"的正解 —— 索引还在，只是要看哪一份。
+static void DrawSearchScopeSwitch() {
+    static const char* kScopes[] = {"当前目录", "所有已索引"};
+    ImGui::PushFont(g_fontSmall);
+    ImGui::TextDisabled("范围");
+    ImGui::PopFont();
+    ImGui::SameLine(0, 8);
+    const int cur = g_searchAllRoots ? 1 : 0;
+    const int next = Segmented("cscope", kScopes, 2, cur, 26.0f);
+    if (next != cur) {
+        g_searchAllRoots = (next == 1);
+        SaveSearchScopeSetting();
+        g_extListDirty = true;
+        if (g_searchMode == 1 && g_searchBuf[0]) {
+            RunSearchNow(g_searchBuf);
+            if (!g_contentNoIndex) g_mode = 2;
+        }
+    }
+}
+
+// 索引管理：看得见每份库占了多少、什么时候建的，也能删。
+// 不提供这个入口的话，%LOCALAPPDATA% 里能悄悄堆出好几个 GB ——
+// 一个清理磁盘的工具自己占着系统盘，说不过去。
+static void DrawIndexManager() {
+    static std::vector<content::IndexInfo> list;
+    static double lastScan = -1e9;
+
+    // 收起来的时候别每帧读盘；只读一次，之后靠"展开"或 2 秒节流刷新
+    const double now = ImGui::GetTime();
+    if (list.empty() || now - lastScan > 2.0) {
+        list = content::ListIndexes();
+        lastScan = now;
+    }
+
+    uint64_t total = 0;
+    for (const auto& i : list) total += i.bytes;
+    char head[128];
+    snprintf(head, sizeof head, "索引管理 · %d 份 · %s", (int)list.size(),
+             FormatBytes(total).c_str());
+    if (!ImGui::CollapsingHeader(head)) return;
+    if (list.empty()) {
+        ImGui::TextDisabled("还没有任何内容索引。");
+        return;
+    }
+
+    ImGui::PushFont(g_fontSmall);
+    for (size_t i = 0; i < list.size(); ++i) {
+        const auto& idx = list[i];
+        ImGui::PushID((int)i);
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(idx.root.c_str());
+        ImGui::SameLine();
+        char meta[160];
+        snprintf(meta, sizeof meta, "  %lld 个文档 · %s%s%s", (long long)idx.docs,
+                 FormatBytes(idx.bytes).c_str(),
+                 idx.partial ? " · 未建完" : "", idx.stale ? " · 需重建" : "");
+        ImGui::TextDisabled("%s", meta);
+        ImGui::SameLine();
+        // 建索引时删库会把 SQLite 连接从底下抽掉，直接禁用
+        const bool busy = g_contentBusy.load();
+        if (busy) ImGui::BeginDisabled();
+        if (GhostButton("删除", ImVec2(48, 22))) {
+            if (content::DeleteIndexFile(idx.dbPath)) {
+                g_lastCleanMsg = "已删除索引：" + idx.root;
+                g_extListDirty = true;
+                lastScan = -1e9;
+            }
+        }
+        if (busy) ImGui::EndDisabled();
+        ImGui::PopID();
+    }
+    ImGui::PopFont();
+}
+
 static void DrawContentSearchTab() {
     // 建完之后如果搜索框里还有词，自动补一次查询
     static bool prevBusy = false;
@@ -2420,15 +2583,16 @@ static void DrawContentSearchTab() {
         const int fresh = content::g_parsed.load();
         const int reused = content::g_skipped.load();
 
-        ImGui::TextDisabled("正在建立内容索引…");
-        if (total > 0) {
+        ImGui::TextDisabled(content::g_passes.load() == 0 ? "正在清点文件…"
+                                                          : "正在建立内容索引…");
+        if (total > 0 && content::g_passes.load() != 0) {
             const float frac = (float)done / (float)total;
             // 进度条本身不写字：10px 高的条里塞文字会压到上下两行
             ImGui::ProgressBar(frac, ImVec2(-1, 8), "");
             ImGui::TextDisabled("%d / %d  (%.0f%%)", done, total, frac * 100.0f);
         } else {
             ImGui::ProgressBar(-1.0f * (float)ImGui::GetTime(), ImVec2(-1, 8), "");
-            ImGui::TextDisabled("正在清点文件…");
+            if (total > 0) ImGui::TextDisabled("可抽正文的候选 %d 个", total);
         }
         ImGui::TextDisabled("新抽取 %d 个 · 复用上次 %d 个", fresh, reused);
         std::string cur = content::CurrentPath();
@@ -2439,10 +2603,26 @@ static void DrawContentSearchTab() {
         return;
     }
 
-    if (!content::HasIndex(g_rootPath)) {
+    const std::string root = content::NormRoot(g_rootPath);
+    const bool hasHere = content::HasIndex(root);
+
+    DrawSearchScopeSwitch();
+    ImGui::Dummy(ImVec2(0, 2));
+
+    // 用户在没索引的情况下搜过东西：把原因摆在他面前，而不是只显示"0 条"
+    if (g_contentNoIndex) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ThemeColor(g_ui.warning));
+        ImGui::TextWrapped("「%s」还没有内容索引，所以刚才那次搜索什么也没返回。",
+                           root.c_str());
+        ImGui::PopStyleColor();
         ImGui::Dummy(ImVec2(0, 2));
-        ImGui::TextDisabled("还没有内容索引。");
-        ImGui::TextDisabled("只抽文本/代码、DXF、STEP/IGES/OBJ；建一次，之后按大小和时间增量更新。");
+    }
+
+    if (!hasHere && !(g_searchAllRoots && !content::ListIndexes().empty())) {
+        ImGui::TextDisabled(g_searchAllRoots ? "还没有任何内容索引。"
+                                              : "当前目录还没有内容索引。");
+        ImGui::TextDisabled("只抽文本/代码、Office、PDF、图纸、三维模型；"
+                            "建一次，之后按大小和时间增量更新。");
         ImGui::Dummy(ImVec2(0, 6));
         const bool blocked = g_scanning.load();
         if (blocked) ImGui::BeginDisabled();
@@ -2451,6 +2631,23 @@ static void DrawContentSearchTab() {
         if (blocked) ImGui::TextDisabled("扫描进行中，等扫描结束后再建。");
         std::string err = content::LastError();
         if (!err.empty()) ImGui::TextDisabled("%s", err.c_str());
+
+        // 缺依赖时先说清楚，别等用户搜不到 PDF 才猜
+        {
+            int miss = 0;
+            if (!extract::PdfReady()) ++miss;
+            if (!extract::DwgReady()) ++miss;
+            if (!extract::OcrAvailable()) ++miss;
+            if (miss > 0) {
+                ImGui::Dummy(ImVec2(0, 4));
+                ImGui::PushStyleColor(ImGuiCol_Text, ThemeColor(g_ui.textDim));
+                ImGui::TextWrapped("当前缺 %d 项可选依赖：PDF/DWG/OCR 里对应格式搜不到，"
+                                   "其余格式不受影响（详见 USAGE.md）。", miss);
+                ImGui::PopStyleColor();
+            }
+        }
+        ImGui::Dummy(ImVec2(0, 8));
+        DrawIndexManager();
         return;
     }
 
@@ -2458,6 +2655,12 @@ static void DrawContentSearchTab() {
     if (lastFresh != content::g_parsed.load() || lastReused != content::g_skipped.load()) {
         lastFresh = content::g_parsed.load();
         lastReused = content::g_skipped.load();
+    }
+    const std::string notice = content::LastNotice();
+    if (!notice.empty()) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ThemeColor(g_ui.textDim));
+        ImGui::TextWrapped("%s", notice.c_str());
+        ImGui::PopStyleColor();
     }
     if (g_searchQuery.empty()) {
         ImGui::TextDisabled("内容索引就绪。在上面搜索框输入关键词即可搜正文。");
@@ -2511,19 +2714,39 @@ static void DrawContentSearchTab() {
                 ImGui::PopStyleColor();
             }
         }
+        ImGui::Dummy(ImVec2(0, 8));
+        DrawIndexManager();
         return;
     }
     if (g_hits.empty()) {
         ImGui::TextDisabled("没有文件内容匹配「%s」。", g_searchQuery.c_str());
+        if (!g_searchAllRoots) {
+            ImGui::PushStyleColor(ImGuiCol_Text, ThemeColor(g_ui.textDim));
+            ImGui::TextWrapped("想连之前扫过的其他目录一起搜，点上面的「所有已索引」。");
+            ImGui::PopStyleColor();
+        }
         return;
     }
-    ImGui::TextDisabled("内容命中 %d 项（按相关度排序，勾选可加入待清理）", (int)g_hits.size());
+    {
+        int outCount = 0;
+        for (const auto& h : g_hits) if (!InCurrentDir(h.path)) ++outCount;
+        ImGui::TextDisabled("内容命中 %d 项（按相关度排序，勾选可加入待清理）", (int)g_hits.size());
+        if (outCount > 0) {
+            ImGui::PushStyleColor(ImGuiCol_Text, ThemeColor(g_ui.textDim));
+            ImGui::TextWrapped("%d 项在扫描范围外（带锁，不可勾选），扫它所在目录后可清理",
+                               outCount);
+            ImGui::PopStyleColor();
+        }
+    }
     for (auto& hit : g_hits) {
+        const bool inScope = InCurrentDir(hit.path);
         bool was = g_hitSelected.count(hit.path) > 0;
         bool now = was;
         std::string sz = FormatBytes(hit.size);
-        RowCard(hit.path.c_str(), hit.name, sz, &now, "", hit.path,
-                hit.snippet.empty() ? ShortParent(hit.path) : hit.snippet);
+        RowCard(hit.path.c_str(), hit.name, sz, &now, inScope ? "" : "范围外",
+                inScope ? hit.path : hit.path + "\n不在当前扫描范围内，勾选与清理会被跳过",
+                hit.snippet.empty() ? ShortParent(hit.path) : hit.snippet, inScope);
+        if (!inScope) continue;
         if (now != was) {
             if (now) g_hitSelected[hit.path] = hit.size;
             else g_hitSelected.erase(hit.path);
@@ -2670,19 +2893,34 @@ static void DrawRightPanel() {
     } else if (g_searchMode == 1) {
         DrawContentSearchTab();
     } else {
+        DrawSearchScopeSwitch();
         if (g_searchQuery.empty()) {
             EmptyState("还没有搜索", "在上面搜索框输入文件名，回车或点搜索。Ctrl+F 可以直接跳过去。");
         } else if (g_hits.empty()) {
-            EmptyState("没有命中", "换个关键词试试，或者确认扫描范围是不是当前目录。");
+            EmptyState("没有命中", g_searchAllRoots
+                       ? "所有已建索引的目录里都没有匹配的文件名。"
+                       : "换个关键词试试，或者把上面的范围切成「所有已索引」。");
         } else {
+            int outCount = 0;
+            for (const auto& h : g_hits) if (!InCurrentDir(h.path)) ++outCount;
             ImGui::TextDisabled("命中 %d 项（按大小排序，勾选可加入待清理）",
                                 (int)g_hits.size());
+            if (outCount > 0) {
+                ImGui::PushStyleColor(ImGuiCol_Text, ThemeColor(g_ui.textDim));
+                ImGui::TextWrapped("%d 项在扫描范围外（带锁，不可勾选），扫它所在目录后可清理",
+                                   outCount);
+                ImGui::PopStyleColor();
+            }
             for (auto& hit : g_hits) {
+                const bool inScope = InCurrentDir(hit.path);
                 bool was = g_hitSelected.count(hit.path) > 0;
                 bool now = was;
                 std::string sz = FormatBytes(hit.size);
                 // 标题用文件名；同名文件太多，用父路径末尾区分
-                RowCard(hit.path.c_str(), hit.name, sz, &now, "", hit.path, ShortParent(hit.path));
+                RowCard(hit.path.c_str(), hit.name, sz, &now, inScope ? "" : "范围外",
+                        inScope ? hit.path : hit.path + "\n不在当前扫描范围内，勾选与清理会被跳过",
+                        ShortParent(hit.path), inScope);
+                if (!inScope) continue;
                 if (now != was) {
                     if (now) g_hitSelected[hit.path] = hit.size;
                     else g_hitSelected.erase(hit.path);
@@ -2821,8 +3059,13 @@ static void ProbeVolume(const std::string& root) {
 
 static void StartScan(const std::string& root) {
     if (g_scanning.load()) return;
-    // 内容索引和扫描互斥：新扫描开始先把索引线程叫停
-    g_contentCancel = true;
+    // 内容索引和扫描互斥：新扫描开始先把索引线程叫停。
+    // 但别默默掐掉 —— 用户会看到进度条突然消失，以为程序坏了。
+    if (g_contentBusy.load()) {
+        g_contentCancel = true;
+        g_lastCleanMsg = "开始扫描，内容索引已停止（已完成的部分保留，稍后可「增量更新」）";
+    }
+    g_contentNoIndex = false;
     // 新扫描一开始，旧检测的结果全部作废（旧线程即使还在跑也写不进界面）
     RequestDetectCancel();
     ++g_detectGen;
@@ -2871,7 +3114,7 @@ static void DrawLogo() {
     const float box = 34.0f;
     const float h = 38.0f;
     const char* word = "SpaceSift";
-    const char* sub = "磁盘空间分析";
+    const char* sub = "磁盘空间分析  v" SPACESIFT_VERSION;
     float logoW = box + 11.0f + ImGui::CalcTextSize(word).x;
 
     ImGui::SetCursorScreenPos(p);
@@ -3145,6 +3388,8 @@ static void DrawUI() {
         int errors = g_cleanErrors.load();
         std::string msg = "已清理 " + FormatBytes(g_cleanFreed.load());
         if (errors) msg += "（" + std::to_string(errors) + " 个文件被占用，已跳过）";
+        if (g_cleanOutOfScope > 0)
+            msg += "；另有 " + std::to_string(g_cleanOutOfScope) + " 项在扫描范围外，未处理";
         msg += " · 重新检测中，方块图下次扫描后更新";
         g_lastCleanMsg = msg;
         g_selected.clear();
@@ -3342,7 +3587,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
                       nullptr, nullptr, L"SpaceSiftNative", appIcon};
     RegisterClassExW(&wc);
 
-    HWND hwnd = CreateWindowW(wc.lpszClassName, L"SpaceSift Native", WS_OVERLAPPEDWINDOW,
+    HWND hwnd = CreateWindowW(wc.lpszClassName, L"SpaceSift Native " SPACESIFT_VERSION_W L" · 磁盘空间分析", WS_OVERLAPPEDWINDOW,
                               80, 80, 1320, 880, nullptr, nullptr, wc.hInstance, nullptr);
     g_mainHwnd = hwnd;
     // COM 要在读 shell 目录（SHGetFolderPathW）之前初始化
@@ -3369,6 +3614,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
         }
     }
     g_darkTheme = LoadThemeSetting();
+    g_searchAllRoots = LoadSearchScopeSetting();
     ApplyDarkTitleBar();
     if (!CreateDeviceD3D(hwnd)) {
         CleanupDeviceD3D();
@@ -3440,6 +3686,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
         if (std::string(m) == "content") g_searchMode = 1;
     }
     if (std::getenv("SPACESIFT_CONTENT")) g_pendingContent = true;
+    if (const char* sc = std::getenv("SPACESIFT_SCOPE")) g_searchAllRoots = std::string(sc) == "all";
     // 测试钩子：SPACESIFT_TAB=2 直接打开「检索结果」页签（看建索引进度用）
     if (const char* tab = std::getenv("SPACESIFT_TAB")) g_mode = atoi(tab);
     if (std::getenv("SPACESIFT_EXTPOP")) g_extPopOnce = true;

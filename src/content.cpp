@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <mutex>
 #include <regex>
+#include <unordered_map>
 #include <vector>
 
 #include "extract.h"
@@ -22,12 +23,14 @@ std::atomic<int>  g_parsed{0};
 std::atomic<int>  g_skipped{0};
 std::atomic<bool> g_busy{false};
 std::atomic<int>  g_files{0};
+std::atomic<int>  g_passes{0};
 
 namespace {
 
-std::mutex  g_mutex;          // 保护下面两个字符串
+std::mutex  g_mutex;          // 保护下面几个字符串
 std::string g_curPath;
 std::string g_lastError;
+std::string g_lastNotice;
 
 void SetCurrent(const std::string& p) {
     std::lock_guard<std::mutex> lk(g_mutex);
@@ -39,14 +42,20 @@ void SetError(const std::string& e) {
     g_lastError = e;
 }
 
+void SetNotice(const std::string& n) {
+    std::lock_guard<std::mutex> lk(g_mutex);
+    g_lastNotice = n;
+}
+
 bool Exec(sqlite3* db, const char* sql) {
     return db && sqlite3_exec(db, sql, nullptr, nullptr, nullptr) == SQLITE_OK;
 }
 
 // 抽取器逻辑一改，旧正文就不能信了；这个值一改就整库重建。
 // OCR 开关也算在内：关着时被记为"抽空"的扫描件，开了之后必须重来一遍。
+// 8：原文只存前 16KB（倒排仍吃满 64KB，召回不变）；路径统一反斜杠。
 std::string ExtractVersion() {
-    return std::string("6") + (extract::OcrReady() ? "-ocr" : "");
+    return std::string("8") + (extract::OcrReady() ? "-ocr" : "");
 }
 
 std::string MetaGet(sqlite3* db, const char* key) {
@@ -319,7 +328,7 @@ void Walk(const std::wstring& dir, const std::atomic<bool>& cancel, const FileFn
         // zip/.mph 是流式读的，体积大也不影响（COMSOL 模型动辄几百 MB 到几 GB）
         if (size > extract::kSkipAbove && !extract::StreamsLargeFiles(ext)) continue;
 
-        g_seen.fetch_add(1);
+        // 候选计数交给调用方：这里加会让两阶段遍历把总量算成两倍
         SetCurrent(u8);
         onFile(u8, size, FtToUnix(fd.ftLastWriteTime));
     } while (FindNextFileW(h, &fd));
@@ -334,12 +343,69 @@ void Walk(const std::wstring& dir, const std::atomic<bool>& cancel, const FileFn
 
 }  // namespace
 
+std::string NormRoot(const std::string& root) {
+    std::string s = root;
+    if (s.empty()) return s;
+    for (auto& c : s) if (c == '/') c = '\\';
+    // 盘符大写：E:\ 和 e:\ 必须是同一份库，否则 Windows 不区分大小写、
+    // 而字符串区分，同一个目录会各建一份 600 MB 的库
+    if (s.size() >= 2 && s[1] == ':' && s[0] >= 'a' && s[0] <= 'z')
+        s[0] = (char)toupper((unsigned char)s[0]);
+    while (s.size() > 3 && s.back() == '\\') s.pop_back();
+    if (s.size() == 2 && s[1] == ':') s += '\\';
+    return s;
+}
+
+namespace {
+
+// 旧命名：路径压平后硬截断 40 字符。两个长目录会撞到同一个库
+// （实测 E:\Projects\comsol with ai dsh\build_cache 已被砍成 ...build_cac），
+// 结果就是搜 A 目录搜出 B 目录的文件，甚至把 B 目录的文件删掉。
+std::string LegacyDbPath(const std::string& norm) {
+    return db::IndexPathWithPrefix(norm, "content_");
+}
+
+uint32_t Fnv1a(const std::string& s) {
+    uint32_t h = 2166136261u;
+    for (unsigned char c : s) { h ^= c; h *= 16777619u; }
+    return h;
+}
+
+// 旧库改名到新名字（保留用户已经建好的索引，不强制重建）
+void EnsureMigrated(const std::string& norm, const std::string& newPath) {
+    const std::wstring wNew = extract::ToWide(newPath);
+    if (GetFileAttributesW(wNew.c_str()) != INVALID_FILE_ATTRIBUTES) return;
+    const std::string old = LegacyDbPath(norm);
+    if (old == newPath) return;
+    const std::wstring wOld = extract::ToWide(old);
+    if (GetFileAttributesW(wOld.c_str()) == INVALID_FILE_ATTRIBUTES) return;
+    if (MoveFileExW(wOld.c_str(), wNew.c_str(), MOVEFILE_COPY_ALLOWED)) {
+        MoveFileExW((wOld + L"-wal").c_str(), (wNew + L"-wal").c_str(), MOVEFILE_REPLACE_EXISTING);
+        MoveFileExW((wOld + L"-shm").c_str(), (wNew + L"-shm").c_str(), MOVEFILE_REPLACE_EXISTING);
+    }
+}
+
+}  // namespace
+
 std::string DbPathFor(const std::string& root) {
-    return db::IndexPathWithPrefix(root, "content_");
+    const std::string norm = NormRoot(root);
+    std::string safe;
+    safe.reserve(norm.size());
+    for (char c : norm) {
+        if (isalnum((unsigned char)c) || c == '_') safe.push_back(c);
+        else safe.push_back('_');
+    }
+    if (safe.size() > 33) safe.resize(33);
+    char hex[16];
+    snprintf(hex, sizeof hex, "_%08x", Fnv1a(norm));
+    return db::DataDir() + "\\content_" + safe + hex + ".db";
 }
 
 bool HasIndex(const std::string& root) {
-    std::wstring w = extract::ToWide(DbPathFor(root));
+    const std::string norm = NormRoot(root);
+    const std::string path = DbPathFor(norm);
+    EnsureMigrated(norm, path);
+    std::wstring w = extract::ToWide(path);
     const DWORD a = GetFileAttributesW(w.c_str());
     return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY);
 }
@@ -354,13 +420,87 @@ std::string LastError() {
     return g_lastError;
 }
 
+std::string LastNotice() {
+    std::lock_guard<std::mutex> lk(g_mutex);
+    return g_lastNotice;
+}
+
 void ResetProgress() {
     extract::ResetOcrBudget();
     g_seen = 0;
     g_done = 0;
     g_parsed = 0;
     g_skipped = 0;
-    { std::lock_guard<std::mutex> lk(g_mutex); g_curPath.clear(); g_lastError.clear(); }
+    g_passes = 0;
+    { std::lock_guard<std::mutex> lk(g_mutex); g_curPath.clear(); g_lastError.clear(); g_lastNotice.clear(); }
+}
+
+// 扫描数据目录，把每份内容库的 root / 条目数 / 体积 / 时间读出来。
+// 只读 meta，不 COUNT(*) —— docs 表动辄几十万行，逐库数一遍会把搜索拖慢。
+std::vector<IndexInfo> ListIndexes() {
+    std::vector<IndexInfo> out;
+    const std::string dir = db::DataDir();
+    if (dir.empty()) return out;
+
+    std::wstring pattern = extract::ToWide(dir) + L"\\content_*.db";
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW(pattern.c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) return out;
+
+    const std::string curVer = ExtractVersion();
+    do {
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+        const std::string name = extract::FromWide(fd.cFileName);
+        const std::string full = dir + "\\" + name;
+        if (name.size() > 12 && name.compare(name.size() - 12, 12, ".db.building") == 0) continue;
+
+        IndexInfo info;
+        info.dbPath = full;
+        info.bytes = ((uint64_t)fd.nFileSizeHigh << 32) | (uint64_t)fd.nFileSizeLow;
+
+        sqlite3* db = nullptr;
+        if (sqlite3_open_v2(full.c_str(), &db, SQLITE_OPEN_READONLY, nullptr) == SQLITE_OK) {
+            info.root = NormRoot(MetaGet(db, "root"));
+            info.builtAt = atoll(MetaGet(db, "built_at").c_str());
+            info.partial = MetaGet(db, "partial") == "1";
+            info.stale = MetaGet(db, "extract_version") != curVer;
+            const std::string docs = MetaGet(db, "docs");
+            if (!docs.empty()) {
+                info.docs = atoll(docs.c_str());
+            } else {
+                sqlite3_stmt* st = nullptr;
+                if (sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM docs WHERE err=0",
+                                       -1, &st, nullptr) == SQLITE_OK) {
+                    if (sqlite3_step(st) == SQLITE_ROW) info.docs = sqlite3_column_int64(st, 0);
+                    sqlite3_finalize(st);
+                }
+            }
+            sqlite3_close(db);
+        } else if (db) {
+            sqlite3_close(db);
+        }
+        if (info.root.empty()) info.root = "(未知)";
+        out.push_back(std::move(info));
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+
+    std::sort(out.begin(), out.end(), [](const IndexInfo& a, const IndexInfo& b) {
+        return a.bytes > b.bytes;
+    });
+    return out;
+}
+
+bool DeleteIndexFile(const std::string& dbPath) {
+    const std::wstring w = extract::ToWide(dbPath);
+    if (GetFileAttributesW(w.c_str()) == INVALID_FILE_ATTRIBUTES) return false;
+    const BOOL ok = DeleteFileW(w.c_str());
+    DeleteFileW((w + L"-wal").c_str());
+    DeleteFileW((w + L"-shm").c_str());
+    return ok != 0;
+}
+
+bool DeleteIndex(const std::string& root) {
+    return DeleteIndexFile(DbPathFor(NormRoot(root)));
 }
 
 std::vector<ExtCount> ListExtensions(const std::string& root) {
@@ -388,11 +528,49 @@ std::vector<ExtCount> ListExtensions(const std::string& root) {
     return out;
 }
 
+std::string TruncateUtf8(const std::string& s, size_t cap);   // 定义在查询语法段
+
 void Build(const std::string& root, const std::atomic<bool>& cancel) {
     ResetProgress();
     g_busy = true;
 
-    const std::string dbPath = DbPathFor(root);
+    const std::string norm = NormRoot(root);
+    const std::string dbPath = DbPathFor(norm);
+    EnsureMigrated(norm, dbPath);
+    const std::string version = ExtractVersion();
+
+    // 抽取器升级 → 旧正文不能信。直接删库重建，而不是 DROP TABLE：
+    // 删表不回收页面，6 GB 的库删完还占 6 GB，用户只会觉得"索引越用越大"。
+    {
+        const std::wstring w = extract::ToWide(dbPath);
+        if (GetFileAttributesW(w.c_str()) != INVALID_FILE_ATTRIBUTES) {
+            bool hasDocs = false;
+            std::string oldVer;
+            sqlite3* probe = nullptr;
+            if (sqlite3_open_v2(dbPath.c_str(), &probe, SQLITE_OPEN_READONLY, nullptr) == SQLITE_OK) {
+                oldVer = MetaGet(probe, "extract_version");
+                sqlite3_stmt* st = nullptr;
+                if (sqlite3_prepare_v2(probe, "SELECT 1 FROM docs LIMIT 1", -1, &st, nullptr) == SQLITE_OK) {
+                    hasDocs = sqlite3_step(st) == SQLITE_ROW;
+                    sqlite3_finalize(st);
+                }
+                sqlite3_close(probe);
+            } else if (probe) {
+                sqlite3_close(probe);
+            }
+            if (hasDocs && oldVer != version) {
+                SetNotice("抽取参数已升级，旧正文索引作废，本次重新抽取");
+                DeleteFileW(w.c_str());
+                DeleteFileW((w + L"-wal").c_str());
+                DeleteFileW((w + L"-shm").c_str());
+            }
+        }
+    }
+
+    // 删不掉（另一个实例正开着这个库）就退回"删表"，至少不会拿旧正文冒充新正文
+    const bool stillThere =
+        GetFileAttributesW(extract::ToWide(dbPath).c_str()) != INVALID_FILE_ATTRIBUTES;
+
     sqlite3* db = nullptr;
     if (sqlite3_open(dbPath.c_str(), &db) != SQLITE_OK) {
         SetError("无法创建内容索引库");
@@ -405,10 +583,7 @@ void Build(const std::string& root, const std::atomic<bool>& cancel) {
     Exec(db, "PRAGMA synchronous=NORMAL;");
     Exec(db, "PRAGMA cache_size=-32768;");
     Exec(db, "CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT);");
-
-    // 抽取器或索引结构升级 → 旧正文全部作废重建
-    const std::string version = ExtractVersion();
-    if (MetaGet(db, "extract_version") != version) {
+    if (stillThere && MetaGet(db, "extract_version") != version) {
         Exec(db, "DROP TABLE IF EXISTS docs_fts;");
         Exec(db, "DROP TABLE IF EXISTS docs;");
         MetaPut(db, "extract_version", version);
@@ -438,105 +613,107 @@ void Build(const std::string& root, const std::atomic<bool>& cancel) {
     sqlite3_stmt* getId = nullptr;
     sqlite3_prepare_v2(db, "SELECT id FROM docs WHERE path=?", -1, &getId, nullptr);
 
-    // 第一阶段：先把候选收齐，这样界面上才有真实的总量和百分比
-    struct Cand { std::string path; uint64_t size; int64_t mtime; };
-    std::vector<Cand> cands;
-    cands.reserve(4096);
-    Walk(extract::ToWide(root), cancel, [&](const std::string& full, uint64_t size, int64_t mtime) {
-        if (cands.size() < 600000) cands.push_back({full, size, mtime});
-    });
-    g_seen = (int)cands.size();
+    // 第一阶段：只清点，不存列表。
+    // 原来把候选全塞进 vector 再卡 60 万条 —— C 盘 300 多万文件会被静默砍掉一大半，
+    // 用户搜不到只会以为"程序不行"。现在按流式处理，多的也照抽。
+    g_passes = 0;
+    {
+        int64_t total = 0;
+        Walk(extract::ToWide(norm), cancel, [&](const std::string&, uint64_t, int64_t) {
+            ++total;
+        });
+        g_seen = (int)(total > INT32_MAX ? INT32_MAX : total);
+    }
+    if (cancel.load()) {
+        SetNotice("索引已停止，已完成的部分保留");
+        Exec(db, "COMMIT;");
+    }
 
     // 第二阶段：逐个比对 + 抽取
+    g_passes = 1;
     Exec(db, "BEGIN;");
     int sinceCommit = 0;
 
-    for (const Cand& c : cands) {
-        if (cancel.load()) break;
-        const std::string& full = c.path;
-        const uint64_t size = c.size;
-        const int64_t mtime = c.mtime;
+    Walk(extract::ToWide(norm), cancel, [&](const std::string& full, uint64_t size, int64_t mtime) {
         g_done.fetch_add(1);
-        {
-             // 没变就跳过：失败的也一并跳过，等文件真的变了再重试
-             if (qry) {
-                 sqlite3_reset(qry);
-                 sqlite3_bind_text(qry, 1, full.c_str(), -1, SQLITE_TRANSIENT);
-                 if (sqlite3_step(qry) == SQLITE_ROW) {
-                     const int64_t oldSize = sqlite3_column_int64(qry, 0);
-                     const int64_t oldM    = sqlite3_column_int64(qry, 1);
-                     if (oldSize == (int64_t)size && oldM == mtime) {
-                         g_skipped.fetch_add(1);   // 复用上次结果
-                         continue;
-                     }
-                 }
-             }
-             if (cancel.load()) continue;
+        if (cancel.load()) return;
 
-             const std::string ext = extract::LowerExt(full);
-             std::string txt = extract::Text(full, ext);
-             // OCR 预算用完导致没抽到正文 → 不写库，下次建索引还会重试
-             if (txt.empty() && extract::OcrBudgetLeft() <= 0) {
-                 g_done.fetch_add(1);
-                 continue;
-             }
-             const int err = txt.empty() ? 1 : 0;
-             // token 数当“文档长度”：排序时短文档命中更可信
-             const std::string tokens = err ? std::string() : FtsTokens(txt);
-             int64_t tlen = 0;
-             for (char c : tokens) if (c == ' ') ++tlen;
-
-             const size_t slash = full.find_last_of('\\');
-             const std::string name = (slash == std::string::npos) ? full : full.substr(slash + 1);
-
-             if (ups) {
-                 sqlite3_reset(ups);
-                 sqlite3_bind_text(ups, 1, full.c_str(), -1, SQLITE_TRANSIENT);
-                 sqlite3_bind_text(ups, 2, name.c_str(), -1, SQLITE_TRANSIENT);
-                 sqlite3_bind_int64(ups, 3, (sqlite3_int64)size);
-                 sqlite3_bind_int64(ups, 4, (sqlite3_int64)mtime);
-                 sqlite3_bind_text(ups, 5, ext.c_str(), -1, SQLITE_TRANSIENT);
-                 sqlite3_bind_text(ups, 6, txt.c_str(), (int)txt.size(), SQLITE_TRANSIENT);
-                 sqlite3_bind_int(ups, 7, err);
-                 sqlite3_bind_int64(ups, 8, (sqlite3_int64)tlen);
-                 sqlite3_step(ups);
-             }
-
-             // 同步倒排索引
-             if (getId && ftsDel && ftsIns) {
-                 sqlite3_reset(getId);
-                 sqlite3_bind_text(getId, 1, full.c_str(), -1, SQLITE_TRANSIENT);
-                 if (sqlite3_step(getId) == SQLITE_ROW) {
-                     const sqlite3_int64 id = sqlite3_column_int64(getId, 0);
-                     sqlite3_reset(ftsDel);
-                     sqlite3_bind_int64(ftsDel, 1, id);
-                     sqlite3_step(ftsDel);
-                     if (err == 0) {
-                         sqlite3_reset(ftsIns);
-                         sqlite3_bind_int64(ftsIns, 1, id);
-                         sqlite3_bind_text(ftsIns, 2, tokens.c_str(), (int)tokens.size(),
-                                           SQLITE_TRANSIENT);
-                         sqlite3_step(ftsIns);
-                     }
-                 }
-             }
-             g_parsed.fetch_add(1);
-
-             // 分批提交，每 500 个放一次锁，UI 才不至于一直搜不到东西
-             if (++sinceCommit >= 500) {
-                 Exec(db, "COMMIT;");
-                 Exec(db, "BEGIN;");
-                 sinceCommit = 0;
-             }
+        // 没变就跳过：失败的也一并跳过，等文件真的变了再重试
+        if (qry) {
+            sqlite3_reset(qry);
+            sqlite3_bind_text(qry, 1, full.c_str(), -1, SQLITE_TRANSIENT);
+            if (sqlite3_step(qry) == SQLITE_ROW) {
+                const int64_t oldSize = sqlite3_column_int64(qry, 0);
+                const int64_t oldM    = sqlite3_column_int64(qry, 1);
+                if (oldSize == (int64_t)size && oldM == mtime) {
+                    g_skipped.fetch_add(1);   // 复用上次结果
+                    return;
+                }
+            }
         }
-    }
+
+        const std::string ext = extract::LowerExt(full);
+        std::string txt = extract::Text(full, ext);
+        // OCR 预算用完导致没抽到正文 → 不写库，下次建索引还会重试
+        if (txt.empty() && extract::OcrBudgetLeft() <= 0) return;
+        const int err = txt.empty() ? 1 : 0;
+        // token 数当“文档长度”：排序时短文档命中更可信
+        const std::string tokens = err ? std::string() : FtsTokens(txt);
+        int64_t tlen = 0;
+        for (char c : tokens) if (c == ' ') ++tlen;
+        // 倒排吃全量（召回），原文只留前 16 KB（片段来源）——库体积的大头在原文
+        const std::string stored = err ? std::string() : TruncateUtf8(txt, extract::kSnippetCap);
+
+        const size_t slash = full.find_last_of('\\');
+        const std::string name = (slash == std::string::npos) ? full : full.substr(slash + 1);
+
+        if (ups) {
+            sqlite3_reset(ups);
+            sqlite3_bind_text(ups, 1, full.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(ups, 2, name.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int64(ups, 3, (sqlite3_int64)size);
+            sqlite3_bind_int64(ups, 4, (sqlite3_int64)mtime);
+            sqlite3_bind_text(ups, 5, ext.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(ups, 6, stored.c_str(), (int)stored.size(), SQLITE_TRANSIENT);
+            sqlite3_bind_int(ups, 7, err);
+            sqlite3_bind_int64(ups, 8, (sqlite3_int64)tlen);
+            sqlite3_step(ups);
+        }
+
+        // 同步倒排索引
+        if (getId && ftsDel && ftsIns) {
+            sqlite3_reset(getId);
+            sqlite3_bind_text(getId, 1, full.c_str(), -1, SQLITE_TRANSIENT);
+            if (sqlite3_step(getId) == SQLITE_ROW) {
+                const sqlite3_int64 id = sqlite3_column_int64(getId, 0);
+                sqlite3_reset(ftsDel);
+                sqlite3_bind_int64(ftsDel, 1, id);
+                sqlite3_step(ftsDel);
+                if (err == 0) {
+                    sqlite3_reset(ftsIns);
+                    sqlite3_bind_int64(ftsIns, 1, id);
+                    sqlite3_bind_text(ftsIns, 2, tokens.c_str(), (int)tokens.size(),
+                                      SQLITE_TRANSIENT);
+                    sqlite3_step(ftsIns);
+                }
+            }
+        }
+        g_parsed.fetch_add(1);
+
+        // 分批提交，每 500 个放一次锁，UI 才不至于一直搜不到东西
+        if (++sinceCommit >= 500) {
+            Exec(db, "COMMIT;");
+            Exec(db, "BEGIN;");
+            sinceCommit = 0;
+        }
+    });
 
     Exec(db, "COMMIT;");
 
-    MetaPut(db, "root", root);
+    MetaPut(db, "root", norm);
     MetaPut(db, "built_at", std::to_string((long long)time(nullptr)));
     MetaPut(db, "partial", cancel.load() ? "1" : "0");
-    MetaPut(db, "version", "2");
+    MetaPut(db, "version", "3");
     MetaPut(db, "extract_version", version);
 
     if (qry) sqlite3_finalize(qry);
@@ -551,9 +728,12 @@ void Build(const std::string& root, const std::atomic<bool>& cancel) {
             if (sqlite3_step(st) == SQLITE_ROW) g_files = (int)sqlite3_column_int64(st, 0);
             sqlite3_finalize(st);
         }
+        MetaPut(db, "docs", std::to_string((long long)g_files.load()));
     }
     Exec(db, "PRAGMA wal_checkpoint(TRUNCATE);");
     sqlite3_close(db);
+
+    if (cancel.load()) SetNotice("索引已停止，已完成的部分保留，下次点「增量更新」接着做");
     g_busy = false;
 }
 
@@ -756,6 +936,15 @@ std::string TermToFts(const std::string& q) {
     return out;
 }
 
+// 正文截到 UTF-8 字符边界：切半个汉字会让 text 列变成非法 UTF-8，
+// 后面 LIKE/instr 都按字节走，片段里就会出现乱码。
+std::string TruncateUtf8(const std::string& s, size_t cap) {
+    if (s.size() <= cap) return s;
+    size_t n = cap;
+    while (n > 0 && ((unsigned char)s[n] & 0xC0) == 0x80) --n;
+    return s.substr(0, n);
+}
+
 std::string BuildMatch(const ParsedQuery& p) {
     std::string andPart, orPart, notPart;
     for (const auto& t : p.terms) {
@@ -825,14 +1014,16 @@ bool IsRegexQuery(const std::string& q, std::string& pattern) {
 
 std::vector<db::Hit> Search(const std::string& root, const std::string& query, int limit) {
     std::vector<db::Hit> out;
-    if (query.empty() || !HasIndex(root)) return out;
+    if (query.empty()) return out;
+    const std::string norm = NormRoot(root);
+    if (!HasIndex(norm)) return out;
 
     const ParsedQuery pq = ParseQuery(query);
 
     // ---- 正则模式：全表扫描（显式写 re: 才走这条路，慢是用户预期内的）
     std::string rePat;
     if (IsRegexQuery(query, rePat)) {
-        const std::string dbPath = DbPathFor(root);
+        const std::string dbPath = DbPathFor(norm);
         sqlite3* db = nullptr;
         if (sqlite3_open_v2(dbPath.c_str(), &db, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK) {
             if (db) sqlite3_close(db);
@@ -913,7 +1104,7 @@ std::vector<db::Hit> Search(const std::string& root, const std::string& query, i
 
     if (pq.Empty()) return out;
 
-    const std::string dbPath = DbPathFor(root);
+    const std::string dbPath = DbPathFor(norm);
     sqlite3* db = nullptr;
     if (sqlite3_open_v2(dbPath.c_str(), &db, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK) {
         if (db) sqlite3_close(db);
@@ -996,6 +1187,7 @@ std::vector<db::Hit> Search(const std::string& root, const std::string& query, i
                 h.size = (uint64_t)sqlite3_column_int64(st, 2);
                 h.snippet = Flatten(p3 ? (const char*)p3 : "", 90);
                 h.content = true;
+                h.score = (int)sqlite3_column_int64(st, 4);   // 命中次数，跨库合并时比大小
                 out.push_back(std::move(h));
             }
             sqlite3_finalize(st);
@@ -1068,6 +1260,38 @@ std::vector<db::Hit> Search(const std::string& root, const std::string& query, i
     }
     sqlite3_close(db);
     return out;
+}
+
+// 跨所有已建索引搜索。
+// 这里不把多份库 ATTACH 起来查（FTS5 虚拟表跨库 join 很容易踩坑），
+// 而是每份库各查一次再合并：库的数量是"用户扫过几个目录"级别，几十份顶天了。
+std::vector<db::Hit> SearchAll(const std::string& query, int limit) {
+    std::vector<db::Hit> merged;
+    if (query.empty()) return merged;
+
+    std::unordered_map<std::string, size_t> byPath;   // 小写路径 → merged 下标
+    for (const IndexInfo& idx : ListIndexes()) {
+        if (idx.root.empty() || idx.root == "(未知)") continue;
+        std::vector<db::Hit> part = Search(idx.root, query, limit);
+        for (auto& h : part) {
+            std::string key = h.path;
+            for (auto& c : key) c = (char)tolower((unsigned char)c);
+            auto it = byPath.find(key);
+            if (it == byPath.end()) {
+                byPath[key] = merged.size();
+                merged.push_back(std::move(h));
+            } else if (h.score > merged[it->second].score) {
+                merged[it->second] = std::move(h);   // 同一文件被父子目录各索引过，留更相关的
+            }
+        }
+    }
+
+    std::stable_sort(merged.begin(), merged.end(), [](const db::Hit& a, const db::Hit& b) {
+        if (a.score != b.score) return a.score > b.score;
+        return a.size > b.size;
+    });
+    if (limit > 0 && (int)merged.size() > limit) merged.resize((size_t)limit);
+    return merged;
 }
 
 }  // namespace content

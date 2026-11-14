@@ -23,7 +23,7 @@ def find_window():
         if n and u.IsWindowVisible(h):
             b = ctypes.create_unicode_buffer(n + 1)
             u.GetWindowTextW(h, b, n + 1)
-            if b.value == "SpaceSift Native":
+            if b.value.startswith("SpaceSift Native"):
                 found.append(h)
         return True
 

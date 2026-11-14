@@ -52,8 +52,11 @@ void ResetOcrBudget();
 std::wstring ToWide(const std::string& utf8);
 std::string  FromWide(const std::wstring& w);
 
-// 每个文件最多存这么多正文，避免一个 500 MB 的日志把库撑爆
+// 每个文件最多抽出这么多正文并**全部进倒排索引**（召回优先）。
+// 存进 docs.text 的只有前 kSnippetCap，够做命中片段；
+// 索引库的大头是 docs.text，砍它才有意义，砍倒排就等于"长文档搜不到"。
 constexpr size_t   kStoreCap  = 64 * 1024;
+constexpr size_t   kSnippetCap = 16 * 1024;
 // 超过这个体积直接跳过（装配体 STEP 动辄几百 MB）
 constexpr uint64_t kSkipAbove = 256ull * 1024 * 1024;
 // 普通文本文件最多读这么多

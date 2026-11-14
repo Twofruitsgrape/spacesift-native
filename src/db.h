@@ -18,6 +18,8 @@ struct Hit {
     // 内容检索命中时的正文片段；文件名检索留空
     std::string snippet;
     bool content = false;
+    // 相关度（内容检索=关键词出现次数）。跨多份索引合并时按它排序
+    int score = 0;
 };
 
 // 每个盘/目录一份库，放在 %LOCALAPPDATA%/SpaceSiftNative 下
@@ -44,6 +46,19 @@ void AbortBulk();
 
 // 查询：按文件名子串匹配，按大小降序
 std::vector<Hit> Search(const std::string& query, int limit = 400);
+
+// 已建立的文件名索引清单（给"检索范围 = 所有已索引"与索引管理用）
+struct IndexInfo {
+    std::string root;
+    std::string dbPath;
+    long long   files = 0;
+    long long   builtAt = 0;
+    bool        partial = false;
+};
+std::vector<IndexInfo> ListIndexes();
+
+// 跨所有已建索引按文件名搜：每份库各查一次，按路径去重，按大小合并。
+std::vector<Hit> SearchAll(const std::string& query, int limit = 400);
 
 uint64_t Count();
 bool IsFresh(const std::string& root, int maxAgeHours = 12);

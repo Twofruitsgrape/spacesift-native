@@ -9,9 +9,12 @@ A disk space analyzer and cleaner. Native C++ + ImGui, single executable, no run
 - **Treemap** — areas proportional to real disk usage; click a tile to drill down layer by layer; tiles grow live while scanning
 - **Recommended cleanup** — 17 rules scan system and application caches, tick what you want and clean
 - **Deep cleaning** — lists every child item of the current directory, tick to add to the cleanup queue
-- **Search** — search by filename; the index is built during the scan, ~0.4 s over 3.38 M entries
+- **Search** — two modes sharing one **scope** switch (current folder / all indexed folders):
+  - **Filename**: indexed during the scan, ~0.4 s over 3.38 M entries
+  - **Content**: full-text search with hit snippets (PDF, Office, CAD, 3D, archives, OCR)
+- **Index manager** — see how much each index costs, how many documents it holds, delete it
 - **Confirmation** — every deletion first opens a dialog listing exactly what will go; nothing is deleted until you confirm, and it does not go to the Recycle Bin
-- **Safety** — only paths inside the scanned range are touched; protected system directories are always skipped
+- **Safety** — only paths inside the scanned range are touched; hits outside it are shown with a lock and cannot be ticked; protected system directories are always skipped
 - Light/dark theme toggle, right-click menu (Open containing folder / Copy path / Scan from here)
 
 ## Usage
