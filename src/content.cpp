@@ -720,20 +720,51 @@ void Build(const std::string& root, const std::atomic<bool>& cancel) {
     const bool stillThere =
         GetFileAttributesW(extract::ToWide(dbPath).c_str()) != INVALID_FILE_ATTRIBUTES;
 
-    // 新建 0 字节文件被杀软/备份服务短暂持占锁是 Windows 上的常见现象，
-    // 直接报错只会让用户以为"这软件不行"——重试三次再下结论。
+    // 新建 0 字节文件被杀软（360 主动防御 / 金山毒霸等对未签名 exe 的
+    // "新文件沙箱扫描"）短暂持占锁是 Windows 上的常见现象，实测持锁可达数秒——
+    // 0.75 秒的重试窗口不够。改成指数退避共 ~11.5 秒；仍失败则用 Win32 API
+    // 探测真实错误码，把"杀软占锁 / 权限"这类人话写进错误信息。
     sqlite3* db = nullptr;
     int rc = sqlite3_open(dbPath.c_str(), &db);
-    for (int attempt = 0; rc != SQLITE_OK && attempt < 3; ++attempt) {
+    const int kOpenDelays[] = {250, 250, 500, 500, 1000, 1000, 2000, 2000, 4000, 4000};
+    for (int attempt = 0; rc != SQLITE_OK && attempt < 10; ++attempt) {
         if (db) { sqlite3_close(db); db = nullptr; }
-        Sleep(250);
+        Sleep(kOpenDelays[attempt]);
         rc = sqlite3_open(dbPath.c_str(), &db);
     }
     if (rc != SQLITE_OK) {
         std::string detail = db ? sqlite3_errmsg(db) : "sqlite3 未返回错误描述";
         if (db) sqlite3_close(db);
+
+        // Win32 层复核：sqlite 的 "unable to open database file" 掩盖了真实原因
+        const std::wstring wDb = extract::ToWide(dbPath);
+        std::string win32;
+        HANDLE hProbe = CreateFileW(wDb.c_str(), GENERIC_READ | GENERIC_WRITE,
+                                    FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                                    OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (hProbe == INVALID_HANDLE_VALUE) {
+            const DWORD e = GetLastError();
+            if (e == ERROR_SHARING_VIOLATION)
+                win32 = TR("（Win32: 文件被其他程序占用 —— 通常是杀软正在扫描新文件，"
+                           "请把 SpaceSift 加入杀软信任区后重试，或稍等几秒再点一次）",
+                           "（Win32: file locked by another process — usually antivirus "
+                           "scanning the new file; whitelist SpaceSift in your AV and retry）");
+            else if (e == ERROR_ACCESS_DENIED)
+                win32 = TR("（Win32: 拒绝访问 —— 检查文件只读属性与用户权限）",
+                           "（Win32: access denied — check read-only attribute and permissions）");
+            else {
+                char b[64];
+                snprintf(b, sizeof b, "（Win32 错误码 %lu）", (unsigned long)e);
+                win32 = b;
+            }
+        } else {
+            CloseHandle(hProbe);
+            win32 = TR("（Win32 层可以创建文件 —— 可能是杀软瞬时占用，请再点一次重试）",
+                       "（Win32 layer can create the file — likely transient AV lock; retry）");
+        }
+
         SetError(std::string(TR("无法创建内容索引库", "Failed to create content index database")) +
-                 ": " + detail + "\n" + TR("路径: ", "Path: ") + dbPath);
+                 ": " + detail + "\n" + TR("路径: ", "Path: ") + dbPath + "\n" + win32);
         g_busy = false;
         return;
     }
@@ -1483,6 +1514,17 @@ void RepairLegacyEncodingsAll() {
         const std::string name = extract::FromWide(fd.cFileName);
         if (name.size() > 12 && name.compare(name.size() - 12, 12, ".db.building") == 0) continue;
         const std::string full = dir + "\\" + name;
+        // 0 字节残库（建库瞬间被杀软占锁导致上一轮失败的遗留）：
+        // 打不开也修不了，只会让"索引管理"里常驻一条"(未知)"，直接清掉
+        const uint64_t bytes =
+            ((uint64_t)fd.nFileSizeHigh << 32) | (uint64_t)fd.nFileSizeLow;
+        if (bytes == 0) {
+            const std::wstring w = extract::ToWide(full);
+            DeleteFileW(w.c_str());
+            DeleteFileW((w + L"-wal").c_str());
+            DeleteFileW((w + L"-shm").c_str());
+            continue;
+        }
         sqlite3* db = nullptr;
         if (sqlite3_open_v2(full.c_str(), &db, SQLITE_OPEN_READWRITE, nullptr) == SQLITE_OK) {
             RepairLegacyEncodingDb(db);
