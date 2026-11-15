@@ -12,9 +12,15 @@ import sys
 import zipfile
 import zlib
 
+import time
+
 ROOT = r"C:\Users\ALICE\dev\SpaceSift-Native"
-A = r"C:\Temp\ssfmt\A"
-B = r"C:\Temp\ssfmt\B"
+# 每次跑用一份新目录：复用同一路径要先删掉上百个样本文件，会被批量删除保护拦下；
+# 换新目录最省事，也避免上一次的索引库混进 SearchAll 的结果里。
+_STAMP = time.strftime("%Y%m%d_%H%M%S")
+_SAMPLE_ROOT = os.path.join(r"C:\Temp", "ssfmt_" + _STAMP)
+A = os.path.join(_SAMPLE_ROOT, "A")
+B = os.path.join(_SAMPLE_ROOT, "B")
 TOOL = os.path.join(ROOT, "build", "fmt_matrix.exe")
 EXTRACT_ONE = os.path.join(ROOT, "build", "extract_one.exe")
 
@@ -204,8 +210,8 @@ def pick_keyword(text: str) -> str:
 def main() -> int:
     ocr = "--ocr" in sys.argv
     for d in (A, B):
-        shutil.rmtree(d, ignore_errors=True)
-        os.makedirs(d)
+        os.makedirs(d, exist_ok=True)
+    print("样本目录:", _SAMPLE_ROOT)
 
     cases_a = []      # (ext, keyword, path)
     notes = []        # 无法测试的格式与原因

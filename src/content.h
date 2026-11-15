@@ -27,6 +27,12 @@ std::string NormRoot(const std::string& root);
 std::string DbPathFor(const std::string& root);
 bool HasIndex(const std::string& root);
 
+// 能覆盖该目录的索引根：自己优先，其次最近的祖先；都没有返回空。
+// 索引建在 D:\proj，用户在 D:\proj\sub 里搜正文时，只按精确 root 匹配会
+// 判成"没有索引"——结果就是"换个文件夹就搜不到"。Search 走这个函数。
+std::string FindCoveringIndex(const std::string& root);
+bool HasCoveringIndex(const std::string& root);
+
 // 已建立好的一份内容索引（给"索引管理"用）
 struct IndexInfo {
     std::string root;          // 这份索引覆盖的目录

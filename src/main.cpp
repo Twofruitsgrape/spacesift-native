@@ -150,6 +150,8 @@ static std::atomic<bool>   g_contentCancel{false};
 static bool g_searchAllRoots = false;
 // 内容模式下没索引就搜索时置位，右栏据此显示"先建索引"的引导
 static bool g_contentNoIndex = false;
+// 上次内容搜索实际查的索引根：和当前目录不同，说明用的是父目录的索引
+static std::string g_searchIdxRoot;
 static std::set<std::string> g_extFilter;   // 后缀筛选（空 = 全部）
 static std::vector<content::ExtCount> g_extList;   // 弹窗里的后缀列表（缓存）
 static bool g_extListDirty = true;
@@ -2256,6 +2258,7 @@ struct SearchOut {
     std::vector<db::Hit> hits;
     std::string msg;                  // 状态栏那句「已在全部索引里搜到 N 条」
     bool noIndex = false;             // 内容模式：当前目录没索引，右栏要出引导
+    std::string idxRoot;              // 内容模式：本次实际查的索引根（可能是父目录）
 };
 
 static std::mutex              g_sMx;
@@ -2289,7 +2292,8 @@ static void DoSearch(const SearchJob& job, SearchOut& out) {
                 first = false;
             }
         }
-        const bool here = content::HasIndex(job.root);
+        const std::string idxRoot = content::FindCoveringIndex(job.root);
+        const bool here = !idxRoot.empty();
         // 没索引就直接搜 = 静默 0 条，用户只会以为"这功能是假的"。
         // 这里显式区分三种情况，并把用户推到"建立索引"那个按钮上。
         if (!here) {
@@ -2301,11 +2305,10 @@ static void DoSearch(const SearchJob& job, SearchOut& out) {
                 }
             } else {
                 out.noIndex = true;
-                out.msg = "\" " + job.root +
-                          TR("」还没有内容索引：右栏点「建立内容索引」，"
+                out.msg = TR("当前文件夹还没有内容索引，所以这里搜不到内容：右栏点「建立内容索引」，"
                              "或把范围切到「所有已索引」",
-                             "\" has no content index: click \"Build content index\" in the right panel, "
-                             "or switch the scope to \"All indexed\"");
+                             "This folder has no content index, so nothing here is searchable: "
+                             "click \"Build content index\" in the right panel, or switch the scope to \"All indexed\"");
                 return;
             }
         }
@@ -2317,6 +2320,7 @@ static void DoSearch(const SearchJob& job, SearchOut& out) {
                 : TR("已在全部索引里搜到 ", "Found ") + std::to_string((int)out.hits.size()) + TR(" 条", " result(s) across all indexes");
         } else {
             out.hits = content::Search(job.root, q, 400, &g_sAbort);
+            out.idxRoot = idxRoot;      // 让界面能说清"这次查的是哪份索引"
         }
         return;
     }
@@ -2415,6 +2419,7 @@ static void PollSearch() {
     if (out.gen != g_sGen) return;      // 已被更新的请求取代，丢掉
     g_hits = std::move(out.hits);
     g_contentNoIndex = out.noIndex;
+    g_searchIdxRoot = std::move(out.idxRoot);
     if (!out.msg.empty()) g_lastCleanMsg = out.msg;
     g_searchBusy = false;
 }
@@ -3019,7 +3024,8 @@ static void DrawContentSearchTab() {
     }
 
     const std::string root = content::NormRoot(g_rootPath);
-    const bool hasHere = content::HasIndex(root);
+    // 用"能否搜到"判断：索引建在父目录时，子目录里照样能搜
+    const bool hasHere = content::HasCoveringIndex(root);
 
     DrawSearchScopeSwitch();
     ImGui::Dummy(ImVec2(0, 2));
@@ -3027,8 +3033,8 @@ static void DrawContentSearchTab() {
     // 用户在没索引的情况下搜过东西：把原因摆在他面前，而不是只显示"0 条"
     if (g_contentNoIndex) {
         ImGui::PushStyleColor(ImGuiCol_Text, ThemeColor(g_ui.warning));
-        ImGui::TextWrapped(TR("「%s」还没有内容索引，所以刚才那次搜索什么也没返回。", "\"%s\" has no content index, so the search returned nothing."),
-                           root.c_str());
+        ImGui::TextWrapped(TR("当前文件夹还没有内容索引，所以刚才那次搜索什么也没返回——这并不代表这里没有你要的内容，只是里面的文件还没被读进索引。",
+                              "This folder has no content index, so the last search returned nothing. That does not mean the content is absent; the files here simply were never read into an index."));
         ImGui::PopStyleColor();
         ImGui::Dummy(ImVec2(0, 2));
     }
@@ -3036,8 +3042,10 @@ static void DrawContentSearchTab() {
     // 这份清单走缓存：以前每帧 ListIndexes()（0.7 秒），界面直接僵住
     const auto idxList = content::IndexSnapshot();
     if (!hasHere && !(g_searchAllRoots && !idxList.empty())) {
-        ImGui::TextDisabled(g_searchAllRoots ? TR("还没有任何内容索引。", "No content index yet.")
-                                              : TR("当前目录还没有内容索引。", "The current folder has no content index yet."));
+        // 上面那段已经把"没索引所以搜不到"说过一遍了，这里不再重复标题
+        if (!g_contentNoIndex)
+            ImGui::TextDisabled(g_searchAllRoots ? TR("还没有任何内容索引。", "No content index yet.")
+                                                 : TR("当前文件夹还没有内容索引。", "The current folder has no content index yet."));
         ImGui::TextDisabled(TR("只抽文本/代码、Office、PDF、图纸、三维模型；"
                                "建一次，之后按大小和时间增量更新。",
                                "Extracts text/code, Office, PDF, drawings, 3D models; "
@@ -3146,8 +3154,21 @@ static void DrawContentSearchTab() {
                                              : TR("正在查当前目录的内容索引", "Querying content index of the current folder"));
         return;
     }
+    // 用的是父目录的索引：先说清范围，免得用户以为搜的是整个父目录，
+    // 也免得他把"这里没有"误解成"父目录那份索引里没有"
+    if (!g_searchAllRoots && !g_searchIdxRoot.empty() && g_searchIdxRoot != root) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ThemeColor(g_ui.textDim));
+        ImGui::TextWrapped(TR("当前文件夹用「%s」的内容索引搜索，只显示这个文件夹里的文件。",
+                              "Searching via the index of \"%s\"; only files inside this folder are shown."),
+                           g_searchIdxRoot.c_str());
+        ImGui::PopStyleColor();
+        ImGui::Dummy(ImVec2(0, 2));
+    }
     if (g_hits.empty()) {
-        ImGui::TextDisabled(TR("没有文件内容匹配「%s」。", "No file content matches \"%s\"."), g_searchQuery.c_str());
+        ImGui::TextDisabled(g_searchAllRoots
+                                ? TR("所有已索引的目录里都没有匹配「%s」的内容。", "No indexed folder has content matching \"%s\".")
+                                : TR("当前文件夹里没有匹配「%s」的内容。", "This folder has no content matching \"%s\"."),
+                            g_searchQuery.c_str());
         if (!g_searchAllRoots) {
             ImGui::PushStyleColor(ImGuiCol_Text, ThemeColor(g_ui.textDim));
             ImGui::TextWrapped(TR("想连之前扫过的其他目录一起搜，点上面的「所有已索引」。", "To also search previously scanned folders, switch to \"All indexed\" above."));
@@ -3535,6 +3556,7 @@ static void StartScan(const std::string& root) {
         g_lastCleanMsg = TR("开始扫描，内容索引已停止（已完成的部分保留，稍后可「增量更新」）", "Scan started; content indexing stopped (finished parts kept; \"Update\" resumes later)");
     }
     g_contentNoIndex = false;
+    g_searchIdxRoot.clear();
     // 新扫描一开始，旧检测的结果全部作废（旧线程即使还在跑也写不进界面）
     RequestDetectCancel();
     ++g_detectGen;

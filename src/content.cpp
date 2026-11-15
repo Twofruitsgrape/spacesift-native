@@ -501,6 +501,23 @@ bool HasIndex(const std::string& root) {
     return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY);
 }
 
+std::string FindCoveringIndex(const std::string& root) {
+    std::string norm = NormRoot(root);
+    while (!norm.empty()) {
+        if (HasIndex(norm)) return norm;
+        if (norm.size() <= 3) break;                       // "C:\" 已到顶
+        const size_t p = norm.find_last_of('\\');
+        if (p == std::string::npos || p < 2) break;
+        norm.resize(p);
+        if (norm.size() == 2 && norm[1] == ':') norm += '\\';   // "D:" → "D:\"
+    }
+    return std::string();
+}
+
+bool HasCoveringIndex(const std::string& root) {
+    return !FindCoveringIndex(root).empty();
+}
+
 std::string CurrentPath() {
     std::lock_guard<std::mutex> lk(g_mutex);
     return g_curPath;
@@ -1243,14 +1260,38 @@ std::vector<db::Hit> Search(const std::string& root, const std::string& query, i
     std::vector<db::Hit> out;
     if (query.empty()) return out;
     const std::string norm = NormRoot(root);
-    if (!HasIndex(norm)) return out;
+
+    // 索引可能建在祖先目录上（用户在子目录里搜）。以前这里只认精确 root，
+    // 于是子目录被当成"没有索引"直接返回 0 条 —— 这就是"换个文件夹搜不到"。
+    const std::string idxRoot = FindCoveringIndex(norm);
+    if (idxRoot.empty()) return out;
+
+    // 子目录搜索只认这个子目录下的文件，否则 D:\proj\sub 里会冒出一堆
+    // D:\proj\other 的结果。前缀带结尾反斜杠，避免 "proj2" 被当 "proj"。
+    // 用 substr 精确比对而不是区间：区间法会把 D:\proj备份 也算进 D:\proj。
+    std::string scopePrefix;
+    if (idxRoot != norm) scopePrefix = (norm.back() == '\\') ? norm : norm + '\\';
+    size_t scopeChars = 0;
+    for (unsigned char c : scopePrefix)
+        if ((c & 0xC0) != 0x80) ++scopeChars;      // substr 按字符计
+    const std::string scopeFilter = scopePrefix.empty()
+        ? std::string()
+        : (" AND substr(path, 1, ?7) = ?8");
+    const std::string scopeFilterD = scopePrefix.empty()
+        ? std::string()
+        : (" AND substr(d.path, 1, ?7) = ?8");
+    auto bindScope = [&](sqlite3_stmt* s) {
+        if (scopePrefix.empty()) return;
+        sqlite3_bind_int(s, 7, (int)scopeChars);
+        sqlite3_bind_text(s, 8, scopePrefix.c_str(), -1, SQLITE_TRANSIENT);
+    };
 
     const ParsedQuery pq = ParseQuery(query);
 
     // ---- 正则模式：全表扫描（显式写 re: 才走这条路，慢是用户预期内的）
     std::string rePat;
     if (IsRegexQuery(query, rePat)) {
-        const std::string dbPath = DbPathFor(norm);
+        const std::string dbPath = DbPathFor(idxRoot);
         sqlite3* db = nullptr;
         if (sqlite3_open_v2(dbPath.c_str(), &db, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK) {
             if (db) sqlite3_close(db);
@@ -1289,6 +1330,7 @@ std::vector<db::Hit> Search(const std::string& root, const std::string& query, i
             reFilter += " AND mtime >= ?" + std::to_string(rp);
             reIdx.push_back(rp++);
         }
+        reFilter += scopeFilter;
 
         sqlite3_stmt* st = nullptr;
         const std::string reSql =
@@ -1297,6 +1339,7 @@ std::vector<db::Hit> Search(const std::string& root, const std::string& query, i
         if (sqlite3_prepare_v2(db, reSql.c_str(), -1, &st, nullptr) == SQLITE_OK) {
             sqlite3_bind_text(st, 1, rePat.c_str(), -1, SQLITE_TRANSIENT);
             sqlite3_bind_int(st, 2, limit);
+            bindScope(st);
             size_t fi2 = 0;
             for (const auto& e : pq.exts)
                 sqlite3_bind_text(st, reIdx[fi2++], e.c_str(), -1, SQLITE_TRANSIENT);
@@ -1332,7 +1375,7 @@ std::vector<db::Hit> Search(const std::string& root, const std::string& query, i
 
     if (pq.Empty()) return out;
 
-    const std::string dbPath = DbPathFor(norm);
+    const std::string dbPath = DbPathFor(idxRoot);
     sqlite3* db = nullptr;
     if (sqlite3_open_v2(dbPath.c_str(), &db, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK) {
         if (db) sqlite3_close(db);
@@ -1367,6 +1410,7 @@ std::vector<db::Hit> Search(const std::string& root, const std::string& query, i
         filterSql += " AND d.mtime >= ?" + std::to_string(nextParam);
         filterIdx.push_back(nextParam++);
     }
+    filterSql += scopeFilterD;
 
     const std::string match = BuildMatch(pq);
     if (std::getenv("SPACESIFT_DEBUG_Q")) fprintf(stderr, "[q] match=[%s]\n", match.c_str());
@@ -1395,6 +1439,7 @@ std::vector<db::Hit> Search(const std::string& root, const std::string& query, i
             sqlite3_bind_text(st, 1, rawTerm.c_str(), -1, SQLITE_TRANSIENT);
             sqlite3_bind_text(st, 2, match.c_str(), -1, SQLITE_TRANSIENT);
             sqlite3_bind_int(st, 3, limit);
+            bindScope(st);
             size_t fi = 0;
             for (const auto& e : pq.exts)
                 sqlite3_bind_text(st, filterIdx[fi++], e.c_str(), -1, SQLITE_TRANSIENT);
@@ -1436,6 +1481,7 @@ std::vector<db::Hit> Search(const std::string& root, const std::string& query, i
 
         if (sqlite3_prepare_v2(db, sql.c_str(), -1, &st, nullptr) == SQLITE_OK) {
             sqlite3_bind_int(st, 9, limit);
+            bindScope(st);
             size_t fi = 0;
             for (const auto& e : pq.exts)
                 sqlite3_bind_text(st, filterIdx[fi++], e.c_str(), -1, SQLITE_TRANSIENT);
@@ -1483,15 +1529,17 @@ std::vector<db::Hit> Search(const std::string& root, const std::string& query, i
 
     // 兜底：MATCH 根本构造不出来（纯标点等）→ 全表 LIKE
     {
-        const char* sql2 =
-            "SELECT path,name,size,"
-            "       substr(text, max(1, instr(lower(text), lower(?1)) - 40), 220) "
-            "FROM docs WHERE text LIKE ?2 ESCAPE '\\' ORDER BY mtime DESC LIMIT ?3";
-        if (sqlite3_prepare_v2(db, sql2, -1, &st, nullptr) == SQLITE_OK) {
+        const std::string sql2 =
+            std::string("SELECT path,name,size,") +
+            "       substr(text, max(1, instr(lower(text), lower(?1)) - 40), 220) " +
+            "FROM docs WHERE text LIKE ?2 ESCAPE '\\'" + scopeFilter +
+            " ORDER BY mtime DESC LIMIT ?3";
+        if (sqlite3_prepare_v2(db, sql2.c_str(), -1, &st, nullptr) == SQLITE_OK) {
             const std::string pat = "%" + LikeEscape(query) + "%";
             sqlite3_bind_text(st, 1, query.c_str(), -1, SQLITE_TRANSIENT);
             sqlite3_bind_text(st, 2, pat.c_str(), -1, SQLITE_TRANSIENT);
             sqlite3_bind_int(st, 3, limit);
+            bindScope(st);
             while (sqlite3_step(st) == SQLITE_ROW) {
                 db::Hit h;
                 const unsigned char* p0 = sqlite3_column_text(st, 0);
