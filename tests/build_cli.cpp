@@ -16,6 +16,20 @@
 int main(int argc, char** argv) {
     std::string root;
     if (argc >= 2) root = argv[1];
+    // 中文路径别走 argv —— 控制台代码页会把 UTF-8 字节弄坏（会建出哈希对不上的垃圾库）。
+    // BUILD_ROOT_FILE 指向一个 UTF-8 文本文件，第一行就是目录。
+    if (root.empty() && std::getenv("BUILD_ROOT_FILE")) {
+        FILE* f = fopen(std::getenv("BUILD_ROOT_FILE"), "rb");
+        if (f) {
+            char buf[2048] = {0};
+            size_t n = fread(buf, 1, sizeof buf - 1, f);
+            fclose(f);
+            std::string s(buf, n);
+            while (!s.empty() && (s.back() == '\n' || s.back() == '\r' || s.back() == ' '))
+                s.pop_back();
+            root = s;
+        }
+    }
     if (root.empty() && _wgetenv(L"BUILD_ROOT")) {
         wchar_t* w = _wgetenv(L"BUILD_ROOT");
         int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0, nullptr, nullptr);

@@ -56,7 +56,10 @@ bool Exec(sqlite3* db, const char* sql) {
 // OCR 开关也算在内：关着时被记为"抽空"的扫描件，开了之后必须重来一遍。
 // 8：原文只存前 16KB（倒排仍吃满 64KB，召回不变）；路径统一反斜杠。
 std::string ExtractVersion() {
-    return std::string("8") + (extract::OcrReady() ? "-ocr" : "");
+    // 10：新增 .slx/.slxc/.sldd/.mldatx（Simulink 系列）、.mlx、.vsdx、.mat、
+    //     .xmind/.3mf/.ipynb/.drawio 等 —— 旧库的覆盖不全导致"明明有这词却搜不到"，
+    //     升版让它们下次建索引时整库重建。
+    return std::string("10") + (extract::OcrReady() ? "-ocr" : "");
 }
 
 std::string MetaGet(sqlite3* db, const char* key) {
@@ -724,6 +727,25 @@ void Build(const std::string& root, const std::atomic<bool>& cancel) {
     // "新文件沙箱扫描"）短暂持占锁是 Windows 上的常见现象，实测持锁可达数秒——
     // 0.75 秒的重试窗口不够。改成指数退避共 ~11.5 秒；仍失败则用 Win32 API
     // 探测真实错误码，把"杀软占锁 / 权限"这类人话写进错误信息。
+
+    // 先自愈残骸：只读属性会让 CreateFile 直接报"拒绝访问"（不是共享冲突），
+    // 0 字节空库则说明上一次建库在建表前就断了——两者都清掉再开。
+    {
+        const std::wstring wDb = extract::ToWide(dbPath);
+        const DWORD attr = GetFileAttributesW(wDb.c_str());
+        if (attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY)) {
+            if (attr & FILE_ATTRIBUTE_READONLY)
+                SetFileAttributesW(wDb.c_str(), FILE_ATTRIBUTE_NORMAL);
+            WIN32_FILE_ATTRIBUTE_DATA fad;
+            if (GetFileAttributesExW(wDb.c_str(), GetFileExInfoStandard, &fad) &&
+                fad.nFileSizeHigh == 0 && fad.nFileSizeLow == 0) {
+                DeleteFileW(wDb.c_str());
+                DeleteFileW((wDb + L"-wal").c_str());
+                DeleteFileW((wDb + L"-shm").c_str());
+            }
+        }
+    }
+
     sqlite3* db = nullptr;
     int rc = sqlite3_open(dbPath.c_str(), &db);
     const int kOpenDelays[] = {250, 250, 500, 500, 1000, 1000, 2000, 2000, 4000, 4000};
@@ -845,8 +867,10 @@ void Build(const std::string& root, const std::atomic<bool>& cancel) {
 
         const std::string ext = extract::LowerExt(full);
         std::string txt = extract::Text(full, ext);
-        // OCR 预算用完导致没抽到正文 → 不写库，下次建索引还会重试
-        if (txt.empty() && extract::OcrBudgetLeft() <= 0) return;
+        // OCR 预算用完导致没抽到正文 → 不写库，下次建索引还会重试。
+        // 只对"只能靠 OCR 出正文"的图片成立；.dll/.caj 这种不支持的二进制
+        // 必须照常入库标 err=1，否则每次建索引都要把它们重试一遍。
+        if (txt.empty() && extract::NeedsOcr(ext) && extract::OcrBudgetLeft() <= 0) return;
         const int err = txt.empty() ? 1 : 0;
         // token 数当“文档长度”：排序时短文档命中更可信
         const std::string tokens = err ? std::string() : FtsTokens(txt);

@@ -48,6 +48,10 @@ bool IsTextExt(const std::string& e) {
         ".inp", ".dat", ".msg", ".sta", ".cdb", ".anf", ".wbpj",
         // ABAQUS 的 journal / replay 也是纯文本（建模命令，含零件名与材料名）
         ".jnl", ".rpy",
+        // MATLAB 周边：.l 许可/包文件、.asv 自动保存、.nb Mathematica 笔记本
+        ".l", ".asv", ".nb", ".fld", ".tmw", ".original",
+        // 笔记本 / 图 / 脑图（本来就是 XML/JSON 文本）
+        ".ipynb", ".drawio", ".mm", ".opml", ".mmd", ".puml", ".mermaid",
     };
     for (const char* x : kExts) if (e == x) return true;
     return false;
@@ -646,11 +650,65 @@ bool StartsWith(const std::string& s, const char* p) {
     return s.size() >= n && s.compare(0, n, p) == 0;
 }
 
+bool EndsWithStr(const std::string& s, const char* suf) {
+    const size_t n = strlen(suf);
+    return s.size() >= n && s.compare(s.size() - n, n, suf) == 0;
+}
+
+// ======================= MATLAB / Simulink 系列（zip 容器）=======================
+//
+// 这批扩展名都是 OPC/zip 外壳，正文在 XML 里：
+//   .slx   Simulink 模型 —— simulink/blockdiagram.xml、simulink/systems/*.xml；
+//          块名称、参数值、Mask 描述、Stateflow 状态机标签全在 XML 文本节点里
+//   .slxc  Simulink 缓存     .sldd 数据字典     .mldatx 测试/App 打包
+// 只认 xml/json/文本条目，二进制数据条目（模型缓存、截图）跳过。
+bool IsZipXmlExt(const std::string& e) {
+    return e == ".slx" || e == ".slxc" || e == ".sldd" || e == ".slddc" || e == ".mldatx" ||
+           e == ".xmind" ||   // 脑图：content.json / content.xml
+           e == ".3mf";       // 3D 打印包：3D/*.model(XML) + *.rels 里有零件名
+}
+
+std::string ZipXmlText(const std::string& path) {
+    ZipReader z;
+    if (!z.Open(path)) return {};
+    std::string out;
+    const int n = z.Count();
+    for (int i = 0; i < n && out.size() < kStoreCap; ++i) {
+        if (z.IsDir(i)) continue;
+        std::string name;
+        if (!z.Name(i, name)) continue;
+        std::string lower = name;
+        for (auto& c : lower) c = (char)tolower((unsigned char)c);
+        const bool json = EndsWithStr(lower, ".json");
+        const bool xml = EndsWithStr(lower, ".xml") || EndsWithStr(lower, ".rels");
+        const bool txt = EndsWithStr(lower, ".m") || EndsWithStr(lower, ".mdl") ||
+                         EndsWithStr(lower, ".txt") || EndsWithStr(lower, ".mf");
+        if (!json && !xml && !txt) continue;
+        if (z.Size(i) > 32ull * 1024 * 1024) continue;   // zip 炸弹闸
+        std::string body;
+        if (!z.Extract(i, body, 32u * 1024 * 1024)) continue;
+        std::string tmp;
+        if (json)      CollectJsonStrings(body, tmp, 24 * 1024);
+        else if (xml)  CollectXmlText(body, tmp, 32 * 1024);
+        else {
+            tmp = Decode(body);
+            if (tmp.size() > 24 * 1024) tmp.resize(24 * 1024);
+        }
+        if (out.size() < kStoreCap)
+            out.append(tmp, 0, std::min(kStoreCap - out.size(), tmp.size()));
+    }
+    return out;
+}
+
+// .mat（MATLAB 数据）的抽取在"质量闸门"段之后定义（要复用 LooksLikeGarbage）
+
 bool IsOoxmlExt(const std::string& e) {
     return e == ".docx" || e == ".docm" || e == ".dotx" ||
            e == ".xlsx" || e == ".xlsm" ||
            e == ".pptx" || e == ".pptm" ||
-           e == ".odt" || e == ".ods" || e == ".odp";
+           e == ".odt" || e == ".ods" || e == ".odp" ||
+           e == ".mlx" ||    // MATLAB Live Script：matlab/document.xml
+           e == ".vsdx";     // Visio：visio/document.xml + visio/pages/page*.xml
 }
 
 // 只读"装着正文"的那几个 XML，不碰 picture/fonts 这类二进制
@@ -666,6 +724,12 @@ bool OoxmlEntryWanted(const std::string& ext, const std::string& name) {
         return StartsWith(name, "ppt/slides/slide") || StartsWith(name, "ppt/notesSlides/");
     if (ext == ".odt" || ext == ".ods" || ext == ".odp")
         return name == "content.xml" || name == "meta.xml";
+    if (ext == ".mlx")
+        return name == "matlab/document.xml" || StartsWith(name, "matlab/") ||
+               name == "metadata/coreProperties.xml";
+    if (ext == ".vsdx")
+        return name == "visio/document.xml" || StartsWith(name, "visio/pages/page") ||
+               name == "docProps/core.xml";
     return false;
 }
 
@@ -1685,10 +1749,19 @@ bool Supports(const std::string& ext) {
     if (ext == ".7z" || ext == ".rar") return ArchiveReady();
     if (ext == ".sldprt" || ext == ".sldasm" || ext == ".slddrw") return true;
     if (ext == ".mph") return true;   // COMSOL 模型（zip）
+    if (IsZipXmlExt(ext)) return true;   // .slx/.xmind/.3mf/.mldatx…（zip + XML/JSON）
+    if (ext == ".mat") return true;         // MATLAB 数据（字符串扫描，v7.3 捞得少）
     if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" ||
         ext == ".tif" || ext == ".tiff")
         return OcrReady();
     return false;
+}
+
+// 只有这些"靠 OCR 才能出正文"的类型，才该受 OCR 预算限制；
+// 不支持的二进制（.dll/.caj…）必须照常入库标 err=1，否则每次建索引都要重试一遍。
+bool NeedsOcr(const std::string& ext) {
+    return ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" ||
+           ext == ".tif" || ext == ".tiff";
 }
 
 bool PdfReady() { return Pdf().ok; }
@@ -1734,6 +1807,152 @@ bool LooksLikeGarbage(const std::string& t) {
     return bad * 4 > t.size();
 }
 
+// .mat（MATLAB 数据）—— MAT v5 是结构化二进制，不是"里面碰巧有字符串"。
+// 猜字节扫字符串会被双精度数据骗出一堆乱码（实测 500 字节里 90% 是噪声），
+// 所以按格式解析：变量名 + char 数组（字符串值）都拿出来，数值矩阵跳过。
+// v7 默认把每个变量存成 miCOMPRESSED（zlib），用 miniz 解压后继续解析。
+static uint32_t MatU32(const unsigned char* p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+static void MatAddUtf16(std::string& out, const unsigned char* d, size_t bytes) {
+    // mxCHAR 存的是 UTF-16LE 码元（有的版本是 UTF-8，见 miUTF8 分支）
+    std::string tmp;
+    for (size_t i = 0; i + 1 < bytes; i += 2) {
+        const unsigned cp = (unsigned)d[i] | ((unsigned)d[i + 1] << 8);
+        if (cp == 0) continue;
+        if (cp < 0x80) {
+            tmp.push_back((char)cp);
+        } else if (cp < 0x800) {
+            tmp.push_back((char)(0xC0 | (cp >> 6)));
+            tmp.push_back((char)(0x80 | (cp & 0x3F)));
+        } else {
+            tmp.push_back((char)(0xE0 | (cp >> 12)));
+            tmp.push_back((char)(0x80 | ((cp >> 6) & 0x3F)));
+            tmp.push_back((char)(0x80 | (cp & 0x3F)));
+        }
+        if (tmp.size() > 4096) break;
+    }
+    if (!tmp.empty()) Append(out, tmp);
+}
+
+// 解析 [p, end) 里的元素序列；depth 防嵌套炸弹
+static void MatParse(const unsigned char* p, const unsigned char* end, std::string& out, int depth);
+
+// 读一个数据元素。必须同时支持两种格式：
+//   大格式  tag(4) + 字节数(4) + 数据（8 字节对齐）
+//   小格式  (字节数<<16 | 类型)(4) + 数据（最多 4 字节，占满 8 字节）
+// 变量名几乎都是小格式，只认大格式会把名字整个读飞。
+struct MatElem {
+    uint32_t type = 0;
+    uint32_t bytes = 0;
+    const unsigned char* data = nullptr;
+    size_t next = 0;   // 下一个元素相对当前指针的偏移
+};
+
+static bool MatElemAt(const unsigned char* p, const unsigned char* end, MatElem& e) {
+    if (end - p < 8) return false;
+    const uint32_t w = MatU32(p);
+    if ((w >> 16) != 0) {
+        e.type = w & 0xFFFF;
+        e.bytes = w >> 16;
+        e.data = p + 4;
+        e.next = 8;
+    } else {
+        e.type = w;
+        e.bytes = MatU32(p + 4);
+        e.data = p + 8;
+        e.next = 8 + (((size_t)e.bytes + 7) & ~(size_t)7);
+    }
+    return e.bytes <= (size_t)(end - e.data);
+}
+
+static void MatParseMatrix(const unsigned char* p, const unsigned char* end, std::string& out, int depth) {
+    MatElem flags;
+    if (!MatElemAt(p, end, flags)) return;
+    // 标志位 u32：低字节是 complex/global/logical，次字节是 mxClassID
+    unsigned cls = 0;
+    if (flags.bytes >= 4) {
+        const uint32_t f = MatU32(flags.data);
+        cls = (f >> 8) & 0xFF;
+        if (cls == 0) cls = f & 0xFF;
+    }
+    const unsigned char* q = p + flags.next;
+
+    MatElem dims;
+    if (!MatElemAt(q, end, dims)) return;
+    size_t count = 1;
+    for (uint32_t i = 0; i + 4 <= dims.bytes && i < 8; i += 4) {
+        const uint32_t d = MatU32(dims.data + i);
+        if (d) count *= d;
+    }
+    q += dims.next;
+
+    MatElem name;
+    if (!MatElemAt(q, end, name)) return;
+    if (name.bytes > 0 && name.bytes < 512) {
+        std::string nm((const char*)name.data, name.bytes);
+        while (!nm.empty() && nm.back() == '\0') nm.pop_back();
+        if (!nm.empty()) Append(out, nm);
+    }
+    q += name.next;
+
+    MatElem data;
+    if (!MatElemAt(q, end, data)) return;
+
+    // 只取 char 数组：类标识是 mxCHAR(4)，或数据类型本身表明是文本
+    const bool byClass = (cls == 4);
+    const bool byType = data.type == 16 || data.type == 17;
+    const bool byteWise = (data.type == 1 || data.type == 2) && count > 0 &&
+                          data.bytes == count;
+    const bool wide = data.type == 4 && count > 0 && data.bytes == count * 2;
+    if (!byClass && !byType && !byteWise && !wide) return;
+    if (data.bytes == 0 || data.bytes > 64 * 1024) return;
+
+    if (data.type == 4 || data.type == 17) {
+        MatAddUtf16(out, data.data, data.bytes);
+    } else {
+        std::string s((const char*)data.data, data.bytes);
+        while (!s.empty() && s.back() == '\0') s.pop_back();
+        if (ValidUtf8(s)) Append(out, s);
+    }
+    (void)depth;
+}
+
+static void MatParse(const unsigned char* p, const unsigned char* end, std::string& out, int depth) {
+    if (depth > 2) return;
+    while (end - p >= 8 && out.size() < kStoreCap) {
+        MatElem e;
+        if (!MatElemAt(p, end, e)) break;              // 截断文件：停下
+        if (e.type == 14) {                             // miMATRIX
+            MatParseMatrix(e.data, e.data + e.bytes, out, depth);
+        } else if (e.type == 15) {                      // miCOMPRESSED（zlib）
+            size_t cap = 0;
+            void* mem = tinfl_decompress_mem_to_heap(e.data, e.bytes, &cap,
+                                                     TINFL_FLAG_PARSE_ZLIB_HEADER);
+            if (mem) {
+                MatParse((const unsigned char*)mem, (const unsigned char*)mem + cap, out,
+                         depth + 1);
+                mz_free(mem);
+            }
+        }
+        p += e.next;
+    }
+}
+
+std::string MatText(const std::string& path) {
+    Reader r;
+    if (!r.Open(path, kSkipAbove)) return {};
+    std::string raw;
+    if (!r.ReadPrefix(32ull * 1024 * 1024, raw)) return {};
+    if (raw.size() < 128) return {};
+
+    std::string out;
+    const unsigned char* base = (const unsigned char*)raw.data();
+    MatParse(base + 128, base + raw.size(), out, 0);   // 前 128 字节是文本头
+    return out;
+}
+
 // 截到完整 UTF-8 字符边界：Append 按字节封顶，末尾可能剩半个字
 static std::string DecodeAndTrim(const std::string& raw) {
     std::string u = Decode(raw);
@@ -1765,6 +1984,8 @@ std::string Text(const std::string& path, const std::string& ext) {
     if (ext == ".7z" || ext == ".rar") return DecodeAndTrim(ArchiveText(path));
     if (ext == ".sldprt" || ext == ".sldasm" || ext == ".slddrw") return SwText(path);
     if (ext == ".mph") return MphText(path);
+    if (IsZipXmlExt(ext)) return ZipXmlText(path);
+    if (ext == ".mat") return MatText(path);
     if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" ||
         ext == ".tif" || ext == ".tiff")
         return DecodeAndTrim(OcrText(path));

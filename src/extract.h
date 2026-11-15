@@ -15,6 +15,10 @@ namespace extract {
 // 参与内容索引的扩展名白名单（含点，小写）
 bool Supports(const std::string& ext);
 
+// 这个类型是不是"只能靠 OCR 出正文"（图片）。
+// 建索引时只有这类文件受 OCR 预算限制；不支持的二进制要照常入库标失败。
+bool NeedsOcr(const std::string& ext);
+
 // 这些格式是流式读的（只取需要的条目），不受 kSkipAbove 体积上限限制
 bool StreamsLargeFiles(const std::string& ext);
 

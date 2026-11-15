@@ -173,6 +173,8 @@ Get-FileHash .\SpaceSift-2.3.0-portable.zip -Algorithm SHA256
 | 三维 | **step / stp** / iges / igs / obj |
 | SolidWorks | **sldprt / sldasm / slddrw**（自定义属性、配置名、装配体零件引用、焊接清单、图纸页） |
 | COMSOL | **mph**（流式读，几百 MB 不占内存） |
+| MATLAB / Simulink | **slx / slxc / sldd / mldatx**（块名、参数值、Mask、Stateflow 脚本）、**mlx / m** / **mat**（变量名 + 字符串值，含压缩块）、asv / nb |
+| 其它工程文档 | **vsdx**（Visio）、**xmind**（脑图）、**3mf**（3D 打印包）、drawio / mm / ipynb |
 | CAE 文本 | inp / cdb / anf / wbpj / dat / msg / sta / jnl / rpy（ABAQUS、ANSYS） |
 | 压缩包 | **zip / rar / 7z**（条目名 + 内层文本文件） |
 

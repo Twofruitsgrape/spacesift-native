@@ -35,7 +35,8 @@ Grab `SpaceSift-2.3.1-portable.zip` (recommended, includes the optional PDF/DWG/
 - **Deep cleaning** — lists every child item of the current directory, tick to add to the cleanup queue
 - **Search** — two modes sharing one **scope** switch (current folder / all indexed folders):
   - **Filename**: indexed during the scan, ~0.4 s over 3.38 M entries
-  - **Content**: full-text search with hit snippets (PDF, Office, CAD, 3D, archives, OCR)
+  - **Content**: full-text search with hit snippets (PDF, Office, CAD, 3D, archives, OCR,
+    plus COMSOL `.mph`, Simulink `.slx`/`.mlx`/`.mat`, Visio `.vsdx`, XMind, `.ipynb`)
 - **Index manager** — see how much each index costs, how many documents it holds, delete it
 - **Confirmation** — every deletion first opens a dialog listing exactly what will go; nothing is deleted until you confirm, and it does not go to the Recycle Bin
 - **Safety** — only paths inside the scanned range are touched; hits outside it are shown with a lock and cannot be ticked; protected system directories are always skipped
