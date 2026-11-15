@@ -9,6 +9,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <mutex>
+#include <atomic>
+#include <thread>
 #include <regex>
 #include <unordered_map>
 #include <vector>
@@ -59,7 +61,7 @@ std::string ExtractVersion() {
     // 10：新增 .slx/.slxc/.sldd/.mldatx（Simulink 系列）、.mlx、.vsdx、.mat、
     //     .xmind/.3mf/.ipynb/.drawio 等 —— 旧库的覆盖不全导致"明明有这词却搜不到"，
     //     升版让它们下次建索引时整库重建。
-    return std::string("10") + (extract::OcrReady() ? "-ocr" : "");
+    return std::string("11") + (extract::OcrReady() ? "-ocr" : "");
 }
 
 std::string MetaGet(sqlite3* db, const char* key) {
@@ -1419,7 +1421,10 @@ std::vector<db::Hit> Search(const std::string& root, const std::string& query, i
             }
             sqlite3_finalize(st);
         }
-        if (!out.empty()) { sqlite3_close(db); return out; }
+        // MATCH 查过就是定论：0 条不要再退化到 LIKE 全表扫描。
+        // 6 GB 的全盘库扫一遍 4.5 秒，而分词在建库与查询是同一套，
+        // 关键词只要进过正文，倒排里就一定有它。
+        if (!match.empty()) { sqlite3_close(db); return out; }
     }
 
     // 只有过滤器（如 ext:pdf size:>10m）：直接按大小列
@@ -1459,7 +1464,24 @@ std::vector<db::Hit> Search(const std::string& root, const std::string& query, i
         return out;
     }
 
-    // 兜底：单字查询 / MATCH 不可用 → 全表 LIKE
+    // 纯标点/控制字符：既没有倒排可查，也没有 LIKE 的意义 —— 直接返回，
+    // 否则 6 GB 的全盘库也要陪扫 4.5 秒
+    {
+        size_t meaningful = 0;
+        for (size_t i = 0; i < query.size();) {
+            const unsigned char c = (unsigned char)query[i];
+            if (c < 0x80) {
+                if (isalnum(c)) ++meaningful;
+                ++i;
+            } else {
+                ++meaningful;
+                i += (c & 0xE0) == 0xC0 ? 2 : (c & 0xF0) == 0xE0 ? 3 : 4;
+            }
+        }
+        if (meaningful == 0) { sqlite3_close(db); return out; }
+    }
+
+    // 兜底：MATCH 根本构造不出来（纯标点等）→ 全表 LIKE
     {
         const char* sql2 =
             "SELECT path,name,size,"
@@ -1497,11 +1519,32 @@ std::vector<db::Hit> SearchAll(const std::string& query, int limit,
     std::vector<db::Hit> merged;
     if (query.empty()) return merged;
 
+    std::vector<IndexInfo> idxs = IndexSnapshot();
+    // 30 份库串行查实测 5.3 秒（大头是打开 6 GB 的全盘库）——改成每个库各开
+    // 一个连接的并行查（SearchIn 本来就是独立连接），再把结果合并去重。
+    std::vector<std::vector<db::Hit>> parts(idxs.size());
+    {
+        const unsigned hw = std::thread::hardware_concurrency();
+        const unsigned nThreads = std::max(2u, std::min(6u, hw ? hw : 4u));
+        std::atomic<size_t> cursor{0};
+        auto worker = [&] {
+            for (;;) {
+                const size_t i = cursor.fetch_add(1);
+                if (i >= idxs.size()) return;
+                if (cancel && cancel->load()) return;
+                const IndexInfo& idx = idxs[i];
+                if (idx.root.empty() || idx.root == TR("(未知)", "(unknown)")) continue;
+                parts[i] = Search(idx.root, query, limit, cancel);
+            }
+        };
+        std::vector<std::thread> pool;
+        pool.reserve(nThreads);
+        for (unsigned t = 0; t < nThreads; ++t) pool.emplace_back(worker);
+        for (auto& th : pool) th.join();
+    }
+
     std::unordered_map<std::string, size_t> byPath;   // 小写路径 → merged 下标
-    for (const IndexInfo& idx : IndexSnapshot()) {
-        if (cancel && cancel->load()) break;         // 关窗口/换关键词：别再把剩下的库查完
-        if (idx.root.empty() || idx.root == TR("(未知)", "(unknown)")) continue;
-        std::vector<db::Hit> part = Search(idx.root, query, limit, cancel);
+    for (auto& part : parts) {
         for (auto& h : part) {
             std::string key = h.path;
             for (auto& c : key) c = (char)tolower((unsigned char)c);

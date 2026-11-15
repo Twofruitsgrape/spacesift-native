@@ -668,6 +668,57 @@ bool IsZipXmlExt(const std::string& e) {
            e == ".3mf";       // 3D 打印包：3D/*.model(XML) + *.rels 里有零件名
 }
 
+// XML 属性里也常放着"人看得懂的名字"：Simulink 的 Block Name="曲轴转速"、
+// 数据字典的 entry name="Kp"、3MF 的 object name="叶轮"。只收文本节点会漏掉这些。
+// 机器标识（rId5、GUID、纯十六进制、纯数字）过滤掉，否则索引里全是噪声。
+void CollectXmlAttrs(const std::string& xml, std::string& out, size_t cap) {
+    size_t i = 0;
+    while (i < xml.size() && out.size() < cap) {
+        i = xml.find('=', i);
+        if (i == std::string::npos) break;
+        size_t q = i + 1;
+        while (q < xml.size() && (xml[q] == ' ' || xml[q] == '\t' || xml[q] == '\r' ||
+                                  xml[q] == '\n'))
+            ++q;
+        if (q >= xml.size() || (xml[q] != '"' && xml[q] != '\'')) {
+            ++i;
+            continue;
+        }
+        const char quote = xml[q];
+        const size_t e = xml.find(quote, q + 1);
+        if (e == std::string::npos) break;
+        std::string v = xml.substr(q + 1, e - q - 1);
+        i = e + 1;
+        if (v.size() < 2 || v.size() > 200) continue;
+
+        size_t letters = 0, hexOnly = 0, cjk = 0;
+        bool allHexish = true;
+        for (size_t k = 0; k < v.size();) {
+            const unsigned char c = (unsigned char)v[k];
+            if (c < 0x80) {
+                if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) ++letters;
+                if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
+                      (c >= 'A' && c <= 'F') || c == '-'))
+                    allHexish = false;
+                ++k;
+                continue;
+            }
+            allHexish = false;
+            if (c >= 0xE0) ++cjk;
+            ++k;
+        }
+        if (allHexish) continue;                 // GUID / 纯十六进制 / 纯数字
+        if (letters < 2 && cjk < 1) continue;    // 没实质文字
+        if (v.size() > 8 && letters == v.size()) {
+            // 全大写的内部常量（如 "EXPLICITONLY"）留着也无害，跳过纯下划线标识
+        }
+        const size_t room = cap > out.size() ? cap - out.size() : 0;
+        if (room == 0) break;
+        out.append(v, 0, std::min(room, v.size()));
+        out.push_back('\n');
+    }
+}
+
 std::string ZipXmlText(const std::string& path) {
     ZipReader z;
     if (!z.Open(path)) return {};
@@ -680,7 +731,8 @@ std::string ZipXmlText(const std::string& path) {
         std::string lower = name;
         for (auto& c : lower) c = (char)tolower((unsigned char)c);
         const bool json = EndsWithStr(lower, ".json");
-        const bool xml = EndsWithStr(lower, ".xml") || EndsWithStr(lower, ".rels");
+        const bool xml = EndsWithStr(lower, ".xml") || EndsWithStr(lower, ".rels") ||
+                         EndsWithStr(lower, ".model");   // 3MF 的实体定义
         const bool txt = EndsWithStr(lower, ".m") || EndsWithStr(lower, ".mdl") ||
                          EndsWithStr(lower, ".txt") || EndsWithStr(lower, ".mf");
         if (!json && !xml && !txt) continue;
@@ -689,8 +741,10 @@ std::string ZipXmlText(const std::string& path) {
         if (!z.Extract(i, body, 32u * 1024 * 1024)) continue;
         std::string tmp;
         if (json)      CollectJsonStrings(body, tmp, 24 * 1024);
-        else if (xml)  CollectXmlText(body, tmp, 32 * 1024);
-        else {
+        else if (xml) {
+            CollectXmlText(body, tmp, 32 * 1024);
+            CollectXmlAttrs(body, tmp, 40 * 1024);   // 属性里的块名/键名/对象名
+        } else {
             tmp = Decode(body);
             if (tmp.size() > 24 * 1024) tmp.resize(24 * 1024);
         }

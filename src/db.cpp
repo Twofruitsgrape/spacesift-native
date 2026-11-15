@@ -48,6 +48,16 @@ static std::string NarrowW(const std::wstring& w) {
 }
 
 std::string DataDir() {
+    // 允许重定向数据目录：自动化测试用它把索引隔离到临时目录（否则
+    // SearchAll 会把用户真实的全盘索引也扫一遍，一个关键词卡几十秒）；
+    // 将来做"便携版/把索引放到 D 盘"也靠它。
+    if (const wchar_t* env = _wgetenv(L"SPACESIFT_DATA_DIR")) {
+        if (env[0]) {
+            std::wstring wdir(env);
+            CreateDirectoryW(wdir.c_str(), nullptr);
+            return NarrowW(wdir);
+        }
+    }
     // 必须用 W 版：SHGetFolderPathA 在中文用户名下返回 GBK，
     // 后面既交给 sqlite（要求 UTF-8）又交给 W 版 API，会找不到目录。
     wchar_t buf[MAX_PATH] = {0};
