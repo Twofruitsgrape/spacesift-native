@@ -4,7 +4,7 @@
 
 **简体中文** | [English](README.en.md)
 
-当前版本 **2.3.0**（标题栏可见）。
+当前版本 **2.3.1**（标题栏可见）。
 
 ![演示](docs/demo.gif)
 
@@ -32,8 +32,8 @@
 
 | 包 | 大小 | 说明 |
 |---|---|---|
-| **`SpaceSift-2.3.0-portable.zip`** | 22 MB | **推荐**。解压后双击 `SpaceSift.exe`，或运行 `install.bat` 一键安装（装到当前用户目录 + 建桌面快捷方式，不需要管理员） |
-| `SpaceSift-2.3.0-exe-only.zip` | 2.0 MB | 只要主程序。文本/代码/Office/压缩包/三维模型可用；**PDF、DWG、OCR 需要额外的 dll**（见 `USAGE.md`） |
+| **`SpaceSift-2.3.1-portable.zip`** | 22 MB | **推荐**。解压后双击 `SpaceSift.exe`，或运行 `install.bat` 一键安装（装到当前用户目录 + 建桌面快捷方式，不需要管理员） |
+| `SpaceSift-2.3.1-exe-only.zip` | 2.0 MB | 只要主程序。文本/代码/Office/压缩包/三维模型可用；**PDF、DWG、OCR 需要额外的 dll**（见 `USAGE.md`） |
 
 两种都不写注册表，删除目录即卸载。
 

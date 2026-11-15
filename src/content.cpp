@@ -386,6 +386,91 @@ void EnsureMigrated(const std::string& norm, const std::string& newPath) {
     }
 }
 
+// ---- 老版本编码修复 --------------------------------------------------------
+// 2.1.x 之前有代码用 CP_ACP(GBK) 做宽窄转换，那段时期写进 meta.root / docs.path
+// 的中文都是 GBK 字节。跨库检索与「索引管理」读出来就是乱码。
+// 这里做一次单向修复：GBK -> UTF-8，只动 path/name，不动 text（FTS 外部内容表
+// 镜像的是 text 列，改它会造成倒排与正文不一致）。
+
+bool ValidUtf8(const std::string& s) {
+    const int n = (int)s.size();
+    int i = 0;
+    while (i < n) {
+        const unsigned char c = (unsigned char)s[i];
+        int len = 0;
+        if (c < 0x80) len = 1;
+        else if ((c & 0xE0) == 0xC0) len = 2;
+        else if ((c & 0xF0) == 0xE0) len = 3;
+        else if ((c & 0xF8) == 0xF0) len = 4;
+        else return false;
+        if (i + len > n) return false;
+        for (int k = 1; k < len; ++k)
+            if (((unsigned char)s[i + k] & 0xC0) != 0x80) return false;
+        i += len;
+    }
+    return true;
+}
+
+std::string GbkToUtf8(const std::string& s) {
+    int n = MultiByteToWideChar(936, 0, s.data(), (int)s.size(), nullptr, 0);
+    if (n <= 0) return s;
+    std::wstring w(n, L'\0');
+    MultiByteToWideChar(936, 0, s.data(), (int)s.size(), &w[0], n);
+    int m = WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(), nullptr, 0, nullptr, nullptr);
+    if (m <= 0) return s;
+    std::string out(m, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(), &out[0], m, nullptr, nullptr);
+    return out;
+}
+
+void RepairLegacyEncodingDb(sqlite3* db) {
+    const std::string ver = MetaGet(db, "extract_version");
+    if (!ver.empty() && ver[0] >= '8') return;   // 8 起全程 UTF-8，不用修
+    if (MetaGet(db, "encoding") == "utf8") return;   // 修过了
+
+    // meta.root
+    const std::string root = MetaGet(db, "root");
+    if (!root.empty() && !ValidUtf8(root)) {
+        const std::string fixed = GbkToUtf8(root);
+        sqlite3_stmt* st = nullptr;
+        if (sqlite3_prepare_v2(db, "UPDATE meta SET value=? WHERE key='root'",
+                               -1, &st, nullptr) == SQLITE_OK) {
+            sqlite3_bind_text(st, 1, fixed.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_step(st);
+            sqlite3_finalize(st);
+        }
+    }
+
+    // docs.path / docs.name（text 不动：FTS 镜像它，且老库 extract_version 过期
+    // 本来就会整库重建，正文那时自然换新）
+    sqlite3_stmt* sel = nullptr;
+    sqlite3_stmt* upd = nullptr;
+    if (sqlite3_prepare_v2(db, "SELECT rowid, path, name FROM docs",
+                           -1, &sel, nullptr) == SQLITE_OK &&
+        sqlite3_prepare_v2(db, "UPDATE docs SET path=?, name=? WHERE rowid=?",
+                           -1, &upd, nullptr) == SQLITE_OK) {
+        Exec(db, "BEGIN;");
+        int fixedRows = 0;
+        while (sqlite3_step(sel) == SQLITE_ROW && fixedRows < 500000) {
+            const sqlite3_int64 rid = sqlite3_column_int64(sel, 0);
+            std::string path = (const char*)sqlite3_column_text(sel, 1);
+            std::string name = (const char*)sqlite3_column_text(sel, 2);
+            if (ValidUtf8(path) && ValidUtf8(name)) continue;
+            if (!ValidUtf8(path)) path = GbkToUtf8(path);
+            if (!ValidUtf8(name)) name = GbkToUtf8(name);
+            sqlite3_bind_text(upd, 1, path.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(upd, 2, name.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int64(upd, 3, rid);
+            if (sqlite3_step(upd) == SQLITE_DONE) ++fixedRows;
+            sqlite3_reset(upd);
+        }
+        Exec(db, "COMMIT;");
+        sqlite3_finalize(sel);
+        sqlite3_finalize(upd);
+    }
+    MetaPut(db, "encoding", "utf8");
+}
+
 }  // namespace
 
 std::string DbPathFor(const std::string& root) {
@@ -463,6 +548,8 @@ std::vector<IndexInfo> ListIndexes() {
         sqlite3* db = nullptr;
         if (sqlite3_open_v2(full.c_str(), &db, SQLITE_OPEN_READONLY, nullptr) == SQLITE_OK) {
             info.root = NormRoot(MetaGet(db, "root"));
+            // 2.1.x 之前 meta.root 可能是 GBK 字节；显示层兜底转一次
+            if (!ValidUtf8(info.root)) info.root = NormRoot(GbkToUtf8(info.root));
             info.builtAt = atoll(MetaGet(db, "built_at").c_str());
             info.partial = MetaGet(db, "partial") == "1";
             info.stale = MetaGet(db, "extract_version") != curVer;
@@ -633,13 +720,24 @@ void Build(const std::string& root, const std::atomic<bool>& cancel) {
     const bool stillThere =
         GetFileAttributesW(extract::ToWide(dbPath).c_str()) != INVALID_FILE_ATTRIBUTES;
 
+    // 新建 0 字节文件被杀软/备份服务短暂持占锁是 Windows 上的常见现象，
+    // 直接报错只会让用户以为"这软件不行"——重试三次再下结论。
     sqlite3* db = nullptr;
-    if (sqlite3_open(dbPath.c_str(), &db) != SQLITE_OK) {
-        SetError(TR("无法创建内容索引库", "Failed to create content index database"));
+    int rc = sqlite3_open(dbPath.c_str(), &db);
+    for (int attempt = 0; rc != SQLITE_OK && attempt < 3; ++attempt) {
+        if (db) { sqlite3_close(db); db = nullptr; }
+        Sleep(250);
+        rc = sqlite3_open(dbPath.c_str(), &db);
+    }
+    if (rc != SQLITE_OK) {
+        std::string detail = db ? sqlite3_errmsg(db) : "sqlite3 未返回错误描述";
         if (db) sqlite3_close(db);
+        SetError(std::string(TR("无法创建内容索引库", "Failed to create content index database")) +
+                 ": " + detail + "\n" + TR("路径: ", "Path: ") + dbPath);
         g_busy = false;
         return;
     }
+    RepairLegacyEncodingDb(db);
     // WAL：建索引的同时还能搜（读连接不会被写锁挡住）
     Exec(db, "PRAGMA journal_mode=WAL;");
     Exec(db, "PRAGMA synchronous=NORMAL;");
@@ -1370,4 +1468,29 @@ std::vector<db::Hit> SearchAll(const std::string& query, int limit,
     return merged;
 }
 
+}  // namespace content
+
+namespace content {
+void RepairLegacyEncodingsAll() {
+    const std::string dir = db::DataDir();
+    if (dir.empty()) return;
+    std::wstring pattern = extract::ToWide(dir) + L"\\content_*.db";
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW(pattern.c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do {
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+        const std::string name = extract::FromWide(fd.cFileName);
+        if (name.size() > 12 && name.compare(name.size() - 12, 12, ".db.building") == 0) continue;
+        const std::string full = dir + "\\" + name;
+        sqlite3* db = nullptr;
+        if (sqlite3_open_v2(full.c_str(), &db, SQLITE_OPEN_READWRITE, nullptr) == SQLITE_OK) {
+            RepairLegacyEncodingDb(db);
+            sqlite3_close(db);
+        } else if (db) {
+            sqlite3_close(db);
+        }
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+}
 }  // namespace content

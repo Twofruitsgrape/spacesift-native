@@ -39,6 +39,10 @@ struct IndexInfo {
 };
 std::vector<IndexInfo> ListIndexes();
 
+// 一次性修复 2.1.x 之前以 GBK 编码写入的老库（meta.root / docs.path / name）。
+// 启动时在后台线程跑一次；已修复的库有 encoding=utf8 标记，不会重复处理。
+void RepairLegacyEncodingsAll();
+
 // ListIndexes 的缓存版：要打开每一份库读 meta，27 份约 0.7 秒
 // （老库缺 docs 元数据时更慢）。界面上每帧调一次 = 每帧冻 0.7 秒，
 // 所以绘制路径一律走这里，只在缓存变脏时读盘。

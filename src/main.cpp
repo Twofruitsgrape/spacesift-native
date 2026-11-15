@@ -113,6 +113,10 @@ static std::atomic<unsigned long long> g_volumeTotal{0};
 static std::wstring       g_currentPathW;
 static std::mutex         g_currentMutex;
 static double             g_scanSeconds = 0;
+// 上次扫同一位置的总字节数/文件数（settings.ini [scan]），给文件夹扫描当分母。
+// 扫盘根时有真实分母（卷已用空间）；扫普通文件夹第一次扫完才有估算值。
+static unsigned long long g_scanEstFiles = 0;
+static unsigned long long g_scanEstBytes = 0;
 static std::string        g_indexMsg = TR("索引未建立", "Index not built");
 
 static std::vector<rules::Rule>    g_rules;    // 规则表本体，只在 WinMain 里构造一次
@@ -1126,7 +1130,15 @@ static std::wstring JoinPathW(const std::wstring& dir, const wchar_t* name) {
     return out;
 }
 
+static void SaveScanStat(const std::string& root, unsigned long long files, unsigned long long bytes);
 static void ScanWorker(std::string root) {
+    // 测试钩子：SPACESIFT_SCAN_SLOWMO=毫秒数。每 64 个文件 Sleep 一次，
+    // 模拟慢盘/网络盘，用来验证扫描中的进度条、暂停/结束按钮等 UI。
+    // 不设这个环境变量时零开销。
+    static const int slowMoMs = [] {
+        const char* e = std::getenv("SPACESIFT_SCAN_SLOWMO");
+        return e ? atoi(e) : 0;
+    }();
     auto started = std::chrono::steady_clock::now();
 
     g_pool.clear();
@@ -1274,6 +1286,7 @@ static void ScanWorker(std::string root) {
             if (!isDir) {
                 // 只加给直接父目录；祖先留到最后一次性后序累加
                 g_fileCount.fetch_add(1);
+                if (slowMoMs > 0 && (g_fileCount.load() % 64) == 0) Sleep(slowMoMs);
                 g_entries[cur.parent].size += size;
                 g_totalBytes.fetch_add(size);
                 continue;
@@ -1325,6 +1338,8 @@ static void ScanWorker(std::string root) {
     auto done = std::chrono::steady_clock::now();
     g_scanSeconds = std::chrono::duration<double>(done - started).count();
     g_scanning = false;
+    // 记下这轮规模：下次扫同一位置，进度条就有分母了（哪怕不是盘根）
+    SaveScanStat(root, g_fileCount.load(), g_totalBytes.load());
 }
 
 static void ScanWorkerSafe(std::string root) {
@@ -3477,6 +3492,40 @@ static void ProbeVolume(const std::string& root) {
     g_volumeUsed = total.QuadPart - freeBytes.QuadPart;
 }
 
+// ---- 每个根目录的扫描规模记录（估算进度用）----
+static std::string ScanStatKey(const std::string& root) {
+    std::string safe;
+    safe.reserve(root.size());
+    for (char c : root) {
+        if (isalnum((unsigned char)c) || c == '_') safe.push_back(c);
+        else safe.push_back('_');
+    }
+    if (safe.size() > 80) safe.resize(80);
+    return safe;
+}
+
+static void SaveScanStat(const std::string& root, unsigned long long files, unsigned long long bytes) {
+    if (files == 0 || bytes == 0) return;
+    wchar_t val[64];
+    _snwprintf(val, 63, L"%llu %llu", files, bytes);
+    WritePrivateProfileStringW(L"scan", Utf8ToWide(ScanStatKey(root)).c_str(), val,
+                               SettingsPath().c_str());
+}
+
+static void LoadScanStat(const std::string& root) {
+    wchar_t buf[64] = {0};
+    GetPrivateProfileStringW(L"scan", Utf8ToWide(ScanStatKey(root)).c_str(), L"",
+                             buf, 63, SettingsPath().c_str());
+    unsigned long long f = 0, b = 0;
+    if (swscanf(buf, L"%llu %llu", &f, &b) == 2) {
+        g_scanEstFiles = f;
+        g_scanEstBytes = b;
+    } else {
+        g_scanEstFiles = 0;
+        g_scanEstBytes = 0;
+    }
+}
+
 static void StartScan(const std::string& root) {
     if (g_scanning.load()) return;
     // 内容索引和扫描互斥：新扫描开始先把索引线程叫停。
@@ -3498,6 +3547,7 @@ static void StartScan(const std::string& root) {
     g_rootPath = norm;
     snprintf(g_pathBuf, sizeof g_pathBuf, "%s", norm.c_str());
     ProbeVolume(norm);
+    LoadScanStat(norm);   // 上次扫这里的历史规模，当进度分母用
     g_scanning = true;
     g_stopReq = false;
     g_paused = false;
@@ -3540,7 +3590,13 @@ static void DrawLogo() {
     const char* word = "SpaceSift";
     char sub[64];
     snprintf(sub, sizeof sub, "%s%s", TR("磁盘空间分析  v", "Disk Space Analyzer  v"), SPACESIFT_VERSION);
-    float logoW = box + 11.0f + ImGui::CalcTextSize(word).x;
+    // 副标题（小字号）比主标题宽，之前只按主标题算宽度 —— 副标题溢出，
+    // 压到右边分隔线和路径框上（截图里 v2.3.0 那行就是被这样挤糊的）。
+    const float wordW = ImGui::CalcTextSize(word).x;
+    const float subW = g_fontSmall
+        ? g_fontSmall->CalcTextSizeA(11.5f, FLT_MAX, 0.0f, sub).x
+        : ImGui::CalcTextSize(sub).x;
+    float logoW = box + 11.0f + std::max(wordW, subW) + 4.0f;
 
     ImGui::SetCursorScreenPos(p);
     ImGui::Dummy(ImVec2(logoW, h));
@@ -3569,6 +3625,7 @@ static void DrawStatusStrip() {
 
     float pct = 0.0f;
     bool known = false;
+    bool estimated = false;
     if (!scanning && g_scanSeconds > 0) {
         pct = 1.0f;
         known = denom > 0;
@@ -3576,16 +3633,26 @@ static void DrawStatusStrip() {
         pct = (float)((double)scanned / (double)denom);
         if (pct > 1.0f) pct = 1.0f;
         known = true;
+    } else if (scanning && g_scanEstBytes > 0) {
+        // 非盘根：拿上次扫这里的历史规模当分母。目录会变，所以封顶 99%，
+        // 文字也带"约"字，不假装是精确值。
+        pct = (float)((double)scanned / (double)g_scanEstBytes);
+        if (pct > 0.99f) pct = 0.99f;
+        known = true;
+        estimated = true;
     }
     if (scanning && !known) pct = (float)fmod(ImGui::GetTime() * 0.6, 1.0);
 
     char left[192];
     if (scanning) {
-        if (known)
+        if (known && !estimated)
             snprintf(left, sizeof left, "%.0f%%   %s / %s", pct * 100.0f,
                      FormatBytes(scanned).c_str(), FormatBytes(denom).c_str());
+        else if (known)
+            snprintf(left, sizeof left, TR("约 %.0f%% · 已扫 %s · %lld 文件", "~%.0f%% · scanned %s · %lld files"),
+                     pct * 100.0f, FormatBytes(scanned).c_str(), (long long)g_fileCount.load());
         else
-            snprintf(left, sizeof left, TR("已扫 %s · %lld 文件", "Scanned %s · %lld files"),
+            snprintf(left, sizeof left, TR("首次扫描 · 已扫 %s · %lld 文件", "First scan · %s · %lld files so far"),
                      FormatBytes(scanned).c_str(), (long long)g_fileCount.load());
     } else if (g_scanSeconds > 0) {
         snprintf(left, sizeof left, TR("%lld 文件 · %s · %.1f 秒", "%lld files · %s · %.1f s"),
@@ -4127,6 +4194,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
     }
     g_darkTheme = LoadThemeSetting();
     i18n::g_lang = LoadLangSetting() ? i18n::Lang_EN : i18n::Lang_ZH;
+    // 2.1.x 之前写进老索引库的 GBK 路径修一次（后台线程，与界面互不干扰）
+    std::thread([] { content::RepairLegacyEncodingsAll(); }).detach();
     g_searchAllRoots = LoadSearchScopeSetting();
     ApplyDarkTitleBar();
     if (!CreateDeviceD3D(hwnd)) {
