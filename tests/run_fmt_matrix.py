@@ -200,7 +200,7 @@ def extracted_text(path: str) -> str:
 
 def pick_keyword(text: str) -> str:
     import re
-    for m in re.finditer(r"[A-Za-z][A-Za-z0-9_\-]{5,}", text):
+    for m in re.finditer(r"[A-Za-z0-9][A-Za-z0-9_\-]{3,}", text):
         return m.group(0)
     for m in re.finditer(r"[\u4e00-\u9fff]{4,8}", text):
         return m.group(0)

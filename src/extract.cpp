@@ -91,6 +91,14 @@ bool LooksUtf16Le(const std::string& s) {
     return zero * 4 > s.size();   // > 一半的奇数位是 0
 }
 
+// 奇数位大量 0x00 → 多半是 UTF-16BE
+bool LooksUtf16Be(const std::string& s) {
+    if (s.size() < 8) return false;
+    size_t zero = 0;
+    for (size_t i = 0; i < s.size(); i += 2) if (s[i] == '\0') ++zero;
+    return zero * 4 > s.size();
+}
+
 std::string GbkToUtf8(const std::string& s) {
     if (s.empty()) return {};
     int n = MultiByteToWideChar(936, 0, s.data(), (int)s.size(), nullptr, 0);
@@ -112,7 +120,19 @@ std::string Utf16LeToUtf8(const std::string& s) {
     if (m <= 0) return {};
     std::string out((size_t)m, '\0');
     WideCharToMultiByte(CP_UTF8, 0, p, (int)n, &out[0], m, nullptr, nullptr);
+    while (!out.empty() && out.back() == '\0') out.pop_back();
     return out;
+}
+
+std::string Utf16BeToUtf8(const std::string& s) {
+    std::string t = s;
+    if (t.size() & 1) t.pop_back();
+    for (size_t i = 0; i + 1 < t.size(); i += 2) {
+        const char c = t[i];
+        t[i] = t[i + 1];
+        t[i + 1] = c;
+    }
+    return Utf16LeToUtf8(t);
 }
 
 // 原始字节 → UTF-8。中文 Windows 上的老文件大量是 GBK，不探测就会整片乱码。
@@ -123,7 +143,10 @@ std::string Decode(const std::string& raw) {
         return raw.substr(3);
     if (raw.size() >= 2 && (unsigned char)raw[0] == 0xFF && (unsigned char)raw[1] == 0xFE)
         return Utf16LeToUtf8(raw.substr(2));
+    if (raw.size() >= 2 && (unsigned char)raw[0] == 0xFE && (unsigned char)raw[1] == 0xFF)
+        return Utf16BeToUtf8(raw.substr(2));
     if (LooksUtf16Le(raw)) return Utf16LeToUtf8(raw);
+    if (LooksUtf16Be(raw)) return Utf16BeToUtf8(raw);
     if (ValidUtf8(raw)) return raw;
     std::string g = GbkToUtf8(raw);
     return g.empty() ? raw : g;   // 兜底：至少别丢光
@@ -288,25 +311,44 @@ std::string DecodeStepEscapes(const std::string& s) {
 // .step / .stp：坐标数字占 95%，真正可搜的是单引号里的名字
 //   #42 = PRODUCT('法兰盘 3寸','flange','',(#43));
 std::string StepStrings(const std::string& path) {
-    Reader r;
-    if (!r.Open(path, kSkipAbove)) return {};
-    std::string out, line, cur;
-    bool inQuote = false;
-    while (out.size() < kStoreCap && r.Line(line)) {
-        for (size_t i = 0; i < line.size(); ++i) {
-            char c = line[i];
-            if (!inQuote) {
-                if (c == '\'') { inQuote = true; cur.clear(); }
-            } else if (c == '\'') {
-                // STEP 里 '' 表示一个单引号
-                if (i + 1 < line.size() && line[i + 1] == '\'') { cur.push_back('\''); ++i; }
-                else { inQuote = false; Append(out, cur); }
-            } else {
-                cur.push_back(c);
+    std::string out;
+
+    // 两遍：先只抓 PRODUCT / FILE_NAME，避免大文件头部成百上千个
+    // FILE_DESCRIPTION('NONE') 把 64KB 配额吃光，真正的零件名在 1 MB 之后。
+    auto scan = [&](bool onlyKey) {
+        Reader r;
+        if (!r.Open(path, kSkipAbove)) return;
+        std::string line, cur;
+        bool inQuote = false;
+        auto emit = [&] {
+            const std::string s = Trim(cur);
+            if (!s.empty() && s != "NONE") Append(out, s);
+        };
+        while (out.size() < kStoreCap && r.Line(line)) {
+            const bool key = line.find("PRODUCT(") != std::string::npos ||
+                             line.find("FILE_NAME(") != std::string::npos;
+            if (onlyKey && !key) continue;
+            if (!onlyKey) {
+                if (key || line.find("FILE_DESCRIPTION(") != std::string::npos) continue;
             }
+            for (size_t i = 0; i < line.size(); ++i) {
+                const char c = line[i];
+                if (!inQuote) {
+                    if (c == '\'') { inQuote = true; cur.clear(); }
+                } else if (c == '\'') {
+                    // STEP 里 '' 表示一个单引号
+                    if (i + 1 < line.size() && line[i + 1] == '\'') { cur.push_back('\''); ++i; }
+                    else { inQuote = false; emit(); }
+                } else {
+                    cur.push_back(c);
+                }
+            }
+            if (inQuote) cur.push_back(' ');   // 跨行的字符串保留成一段
         }
-        if (inQuote) cur.push_back(' ');   // 跨行的字符串保留成一段
-    }
+    };
+
+    scan(true);
+    if (out.size() < kStoreCap) scan(false);
     return DecodeStepEscapes(out);
 }
 
@@ -385,6 +427,25 @@ std::string Strings(const std::string& path) {
     return out;
 }
 
+// 二进制 STL 的前 80 字节常放零件名（"solid 300-426 底盖"）。
+// 整文件走 PlainText 会被三角面片的控制字符触发质量闸门，连头一起丢掉。
+std::string StlHeader(const std::string& path) {
+    Reader r;
+    if (!r.Open(path, 1024)) return {};
+    std::string head;
+    if (!r.ReadPrefix(256, head)) return {};
+    const size_t nl = head.find_first_of("\r\n");
+    if (nl != std::string::npos) head.resize(nl);
+    if (head.size() > 80) head.resize(80);
+    while (!head.empty() && (head.back() == '\0' || head.back() == ' ' || head.back() == '\t'))
+        head.pop_back();
+    if (head.size() < 6 || _strnicmp(head.c_str(), "solid", 5) != 0) return {};
+    size_t s = 5;
+    while (s < head.size() && (head[s] == ' ' || head[s] == '\t')) ++s;
+    if (s >= head.size()) return {};
+    return Decode(head.substr(s));
+}
+
 std::string PlainText(const std::string& path) {
     Reader r;
     if (!r.Open(path, kReadCap)) return {};
@@ -392,6 +453,8 @@ std::string PlainText(const std::string& path) {
     if (!r.ReadPrefix((size_t)kReadCap, raw)) return {};
     std::string u8 = Decode(raw);
     if (u8.size() > kStoreCap) u8.resize(kStoreCap);
+    // UTF-16 文本常带一个结尾 NUL；不清掉会被下面的控制字符闸门误杀
+    while (!u8.empty() && u8.back() == '\0') u8.pop_back();
     // 质量闸门：.dat/.db 这类扩展名太泛，浏览器缓存/二进制文件不能当正文入库
     size_t bad = 0;
     for (unsigned char c : u8)
@@ -1006,9 +1069,11 @@ std::string OcrPdfPage(PdfApi& api, FPDF_PAGE page) {
     const float hPt = api.PageHeight(page);
     if (wPt <= 1.0f || hPt <= 1.0f) return {};
 
-    float scale = 1600.0f / wPt;      // 大约 150–200 DPI，OCR 够用
+    // 约 2400px 宽（≈250–300 DPI）。150 DPI 下「描」会被认成「摘」，
+    // 标题栏/工程图的小字对 DPI 很敏感；代价是每页 OCR 稍慢。
+    float scale = 2400.0f / wPt;
     if (scale < 1.0f) scale = 1.0f;
-    if (scale > 3.0f) scale = 3.0f;
+    if (scale > 4.0f) scale = 4.0f;
     const int w = (int)(wPt * scale);
     const int h = (int)(hPt * scale);
     if (dbg) fprintf(stderr, "[ocr] page %.1fx%.1fpt -> %dx%d px\n", wPt, hPt, w, h);
@@ -1627,6 +1692,73 @@ std::string DecodeBase64(const std::string& s) {
     return o;
 }
 
+// RFC 2047 编码字：Subject: =?utf-8?B?5L2g5aW9?= / =?gbk?Q?=C4=E3=BA=C3?=
+std::string DecodeRfc2047(const std::string& s) {
+    std::string out;
+    size_t i = 0;
+    while (i < s.size()) {
+        const size_t a = s.find("=?", i);
+        if (a == std::string::npos) { out += s.substr(i); break; }
+        out += s.substr(i, a - i);
+        const size_t b = s.find("?=", a + 2);
+        if (b == std::string::npos) { out += s.substr(a); break; }
+        const std::string word = s.substr(a + 2, b - (a + 2));
+        const size_t q1 = word.find('?');
+        const size_t q2 = (q1 == std::string::npos) ? std::string::npos : word.find('?', q1 + 1);
+        if (q1 == std::string::npos || q2 == std::string::npos) {
+            out += s.substr(a, b + 2 - a);
+            i = b + 2;
+            continue;
+        }
+        const std::string charset = word.substr(0, q1);
+        const std::string enc = word.substr(q1 + 1, q2 - q1 - 1);
+        const std::string text = word.substr(q2 + 1);
+        std::string raw;
+        if (enc == "B" || enc == "b") {
+            raw = DecodeBase64(text);
+        } else if (enc == "Q" || enc == "q") {
+            for (size_t k = 0; k < text.size(); ++k) {
+                if (text[k] == '_') raw.push_back(' ');
+                else if (text[k] == '=' && k + 2 < text.size() &&
+                         isxdigit((unsigned char)text[k + 1]) &&
+                         isxdigit((unsigned char)text[k + 2])) {
+                    raw.push_back((char)strtoul(text.substr(k + 1, 2).c_str(), nullptr, 16));
+                    k += 2;
+                } else {
+                    raw.push_back(text[k]);
+                }
+            }
+        } else {
+            raw = text;
+        }
+        std::string lower;
+        for (char c : charset) lower.push_back((char)tolower((unsigned char)c));
+        if (lower == "utf-8" || lower == "utf8") {
+            out += raw;
+        } else if (lower == "gbk" || lower == "gb2312" || lower == "gb18030" || lower == "cp936") {
+            out += GbkToUtf8(raw);
+        } else if (lower == "iso-8859-1" || lower == "latin1") {
+            for (unsigned char c : raw) {
+                if (c < 0x80) out.push_back((char)c);
+                else {
+                    out.push_back((char)(0xC0 | (c >> 6)));
+                    out.push_back((char)(0x80 | (c & 0x3F)));
+                }
+            }
+        } else {
+            out += Decode(raw);
+        }
+        i = b + 2;
+        // 两个相邻 encoded-word 之间的空白按 RFC 2047 丢弃
+        if (i < s.size()) {
+            size_t j = i;
+            while (j < s.size() && (s[j] == ' ' || s[j] == '\t')) ++j;
+            if (j + 1 < s.size() && s[j] == '=' && s[j + 1] == '?') i = j;
+        }
+    }
+    return out;
+}
+
 // .eml：MIME 文本。base64 / quoted-printable 都解一下，附件类长行丢掉
 std::string MimeText(const std::string& path) {
     Reader r;
@@ -1638,8 +1770,11 @@ std::string MimeText(const std::string& path) {
     std::string out;
     std::string line;
     std::string b64;                        // 累积连续的 base64 行
+    bool b64Header = false;                 // Content-Transfer-Encoding: base64
     auto flushB64 = [&] {
-        if (b64.size() >= 64) {
+        // 有 base64 头时，短正文也要解；没有头时仍用长度/填充符做启发式，
+        // 避免把普通英文行（如 "body"）当成 base64。
+        if (!b64.empty() && (b64Header || b64.size() >= 64 || b64.find('=') != std::string::npos)) {
             const std::string d = DecodeBase64(b64);
             // 解出来是文字才要（附件/图片会是二进制）
             size_t bad = 0;
@@ -1652,15 +1787,23 @@ std::string MimeText(const std::string& path) {
     for (size_t i = 0; i <= s.size(); ++i) {
         if (i == s.size() || s[i] == '\n') {
             if (!line.empty() && line.back() == '\r') line.pop_back();
-            bool isB64 = line.size() >= 60;
-            if (isB64) {
-                for (char c : line) if (B64Val(c) < 0 && c != '=') { isB64 = false; break; }
+            if (line.size() >= 26 &&
+                _strnicmp(line.c_str(), "content-transfer-encoding:", 26) == 0) {
+                std::string low;
+                for (char c : line) low.push_back((char)tolower((unsigned char)c));
+                if (low.find("base64") != std::string::npos) b64Header = true;
             }
+            bool allB64 = line.size() >= 8;
+            if (allB64) {
+                for (char c : line) if (B64Val(c) < 0 && c != '=') { allB64 = false; break; }
+            }
+            const bool isB64 = allB64 &&
+                (line.size() >= 60 || b64Header || line.find('=') != std::string::npos);
             if (isB64) {
                 b64 += line;
             } else {
                 flushB64();
-                Append(out, DecodeQuotedPrintable(line));
+                Append(out, DecodeQuotedPrintable(DecodeRfc2047(line)));
             }
             line.clear();
             if (out.size() > kStoreCap) break;
@@ -1732,23 +1875,39 @@ std::string SwText(const std::string& path) {
 
 // ======================= 扫描件/截图 OCR（外部 tesseract）=======================
 
+static bool HasCjk(const std::string& t) {
+    // UTF-8 的 CJK Unified Ideographs 主要落在 E4..E9 开头的三字节序列
+    for (size_t i = 0; i + 2 < t.size(); ++i) {
+        const unsigned char c = (unsigned char)t[i];
+        if (c >= 0xE4 && c <= 0xE9 &&
+            ((unsigned char)t[i + 1] & 0xC0) == 0x80 &&
+            ((unsigned char)t[i + 2] & 0xC0) == 0x80)
+            return true;
+    }
+    return false;
+}
+
 std::string OcrText(const std::string& path) {
     const std::wstring exe = FindTool(L"tesseract.exe");
     if (exe.empty()) return {};
     const std::wstring src = ToWide(path);
     const std::wstring pre = TessdataArgs();
-    std::string out;
+    std::string cn;
     DWORD code = 1;
     // 中文文档用 chi_sim 单独识别比 chi_sim+eng 好得多：
     // 带 eng 时中文会被当英文认（实测“李工”变“SL”、“张工”变“KL”）。
-    // 先试 chi_sim，拿不到东西再退回默认（英文）。
-    if (external::RunCapture(exe, pre + L"\"" + src + L"\" stdout -l chi_sim", out,
-                             kStoreCap, 120000, &code) && code == 0 && out.size() >= 8)
-        return out;
-    out.clear();
-    if (external::RunCapture(exe, pre + L"\"" + src + L"\" stdout", out, kStoreCap, 120000, &code) &&
-        code == 0)
-        return out;
+    const bool cnOk =
+        external::RunCapture(exe, pre + L"\"" + src + L"\" stdout -l chi_sim", cn,
+                             kStoreCap, 120000, &code) && code == 0 && !cn.empty();
+    // chi_sim 认出了汉字就直接用；纯英文图片让 eng 再认一遍，
+    // 否则 chi_sim 会把开头的 zz 认成 Zzz 一类的多余字符，精确搜索就漏了。
+    if (cnOk && HasCjk(cn)) return cn;
+    std::string en;
+    code = 1;
+    if (external::RunCapture(exe, pre + L"\"" + src + L"\" stdout", en, kStoreCap, 120000,
+                             &code) && code == 0 && !en.empty())
+        return en;
+    if (cnOk) return cn;
     return {};
 }
 
@@ -1916,7 +2075,12 @@ static bool MatElemAt(const unsigned char* p, const unsigned char* end, MatElem&
         e.type = w;
         e.bytes = MatU32(p + 4);
         e.data = p + 8;
-        e.next = 8 + (((size_t)e.bytes + 7) & ~(size_t)7);
+        // miCOMPRESSED 的数据不补齐 8 字节，下一个 tag 紧跟其后。
+        // 其它元素按 8 字节对齐；对压缩块也补齐会跳过下一个 tag 的头部，解析随即中断。
+        if (e.type == 15)
+            e.next = 8 + (size_t)e.bytes;
+        else
+            e.next = 8 + (((size_t)e.bytes + 7) & ~(size_t)7);
     }
     return e.bytes <= (size_t)(end - e.data);
 }
@@ -2030,7 +2194,14 @@ std::string Text(const std::string& path, const std::string& ext) {
     if (ext == ".zip") return ZipStrings(path);
     if (ext == ".epub") return EpubText(path);
     if (ext == ".eml") return DecodeAndTrim(MimeText(path));
-    if (ext == ".msg") return DecodeAndTrim(LegacyUtf16Strings(path));
+    if (ext == ".msg") {
+        // Outlook .msg（OLE2/UTF-16）和 ABAQUS 的纯文本 .msg 扩展名撞车。
+        // 先按 UTF-16 扫（Outlook 正文、无 BOM 的 UTF-16 都能拿到），
+        // 扫不出来再按普通文本读（ABAQUS .msg）。
+        std::string t = DecodeAndTrim(LegacyUtf16Strings(path));
+        if (!t.empty() && !LooksLikeGarbage(t)) return t;
+        return PlainText(path);
+    }
 
     // 下面这些吐的是“原始字节”：DXF/STEP 可能是 GBK（$DWGCODEPAGE ANSI_936）
     if (ext == ".dwg") return DecodeAndTrim(DwgText(path));
@@ -2053,6 +2224,10 @@ std::string Text(const std::string& path, const std::string& ext) {
         if (raw.empty()) raw = Strings(path);
     } else if (ext == ".obj") {
         raw = ObjStrings(path);
+    } else if (ext == ".stl") {
+        std::string t = PlainText(path);           // ASCII STL：整篇都是文本
+        if (!t.empty()) return t;
+        return StlHeader(path);                    // 二进制 STL：只取 solid 头
     } else {
         return PlainText(path);                    // 内部已做过编码探测
     }

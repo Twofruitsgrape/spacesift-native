@@ -61,7 +61,9 @@ std::string ExtractVersion() {
     // 10：新增 .slx/.slxc/.sldd/.mldatx（Simulink 系列）、.mlx、.vsdx、.mat、
     //     .xmind/.3mf/.ipynb/.drawio 等 —— 旧库的覆盖不全导致"明明有这词却搜不到"，
     //     升版让它们下次建索引时整库重建。
-    return std::string("11") + (extract::OcrReady() ? "-ocr" : "");
+    // 12：CJK 索引补 unigram（混合查询/单字）、MAT 压缩块、STL 头、UTF-16BE、
+    //     EML 编码主题、.msg 分流；旧 token/正文都作废。
+    return std::string("12") + (extract::OcrReady() ? "-ocr" : "");
 }
 
 std::string MetaGet(sqlite3* db, const char* key) {
@@ -153,13 +155,16 @@ std::string FtsTokens(const std::string& text) {
     std::vector<unsigned> run;
 
     auto flush = [&] {
+        // bigram：短语查询用（"法兰 兰盘"）
         for (size_t k = 0; k + 1 < run.size(); ++k) {
             PutCp(o, run[k]);
             PutCp(o, run[k + 1]);
             o.push_back(' ');
         }
-        if (run.size() == 1) {          // 孤字单独存一份，单字查询才能命中
-            PutCp(o, run[0]);
+        // unigram：单字查询、以及 "盘3"/"关键词C丙" 这类混合查询里的
+        // 单个 CJK 字用。只存孤字的话，处在长 run 中间的字永远搜不到。
+        for (size_t k = 0; k < run.size(); ++k) {
+            PutCp(o, run[k]);
             o.push_back(' ');
         }
         run.clear();
@@ -211,7 +216,7 @@ std::string FtsQuery(const std::string& q) {
             out += "\"";
         } else if (run.size() == 1) {
             if (!out.empty()) out += " AND ";
-            PutCp(out, run[0]);          // 索引里只有单字成 run 时才存在
+            PutCp(out, run[0]);          // 索引现在为每个 CJK 字都存了 unigram
         }
         run.clear();
     };
@@ -228,6 +233,9 @@ std::string FtsQuery(const std::string& q) {
                     w.push_back((char)tolower((unsigned char)q[i]));
                     ++i;
                 }
+                // 拉丁词支持前缀：engineer 能命中 engineering，alph 能命中 alpha。
+                // 不支持任意子串（ell 仍在 hello 里搜不到），但覆盖了最常见的英文用法。
+                if (w.size() >= 2) w.push_back('*');
                 if (!out.empty()) out += " AND ";
                 out += w;
                 continue;
@@ -701,6 +709,19 @@ std::vector<ExtCount> ListExtensions(const std::string& root) {
 
 std::string TruncateUtf8(const std::string& s, size_t cap);   // 定义在查询语法段
 
+static bool HasColumn(sqlite3* db, const char* table, const char* col) {
+    const std::string sql = std::string("PRAGMA table_info(") + table + ");";
+    sqlite3_stmt* st = nullptr;
+    if (sqlite3_prepare_v2(db, sql.c_str(), -1, &st, nullptr) != SQLITE_OK) return false;
+    bool found = false;
+    while (sqlite3_step(st) == SQLITE_ROW) {
+        const char* name = (const char*)sqlite3_column_text(st, 1);
+        if (name && col == std::string(name)) { found = true; break; }
+    }
+    sqlite3_finalize(st);
+    return found;
+}
+
 void Build(const std::string& root, const std::atomic<bool>& cancel) {
     ResetProgress();
     g_busy = true;
@@ -824,26 +845,47 @@ void Build(const std::string& root, const std::atomic<bool>& cancel) {
     Exec(db,
          "CREATE TABLE IF NOT EXISTS docs(id INTEGER PRIMARY KEY,path TEXT NOT NULL UNIQUE,"
          "name TEXT,size INTEGER,mtime INTEGER,ext TEXT,text TEXT,err INTEGER DEFAULT 0,"
-         "tlen INTEGER DEFAULT 0);");
+         "tlen INTEGER DEFAULT 0,gen INTEGER DEFAULT 0);");
+    // 老库补 gen 列：这次 build 见到的 path 打上 currentGen，结束后删除没见到的行。
+    // 不做差集删除的话，删掉/改名的文件会永远留在搜索结果里。
+    if (!HasColumn(db, "docs", "gen"))
+        Exec(db, "ALTER TABLE docs ADD COLUMN gen INTEGER DEFAULT 0;");
     // 外部内容表：索引里放分词后的 token，snippet() 取 docs.text 的原文
     Exec(db, "CREATE VIRTUAL TABLE IF NOT EXISTS docs_fts USING fts5("
              "text, content='docs', content_rowid='id');");
+
+    int64_t currentGen = 1;
+    {
+        const std::string old = MetaGet(db, "build_gen");
+        if (!old.empty()) currentGen = strtoll(old.c_str(), nullptr, 10) + 1;
+        MetaPut(db, "build_gen", std::to_string((long long)currentGen));
+    }
 
     sqlite3_stmt* qry = nullptr;
     sqlite3_stmt* ups = nullptr;
     sqlite3_stmt* ftsDel = nullptr;
     sqlite3_stmt* ftsIns = nullptr;
+    sqlite3_stmt* mark = nullptr;
     sqlite3_prepare_v2(db, "SELECT size,mtime FROM docs WHERE path=?", -1, &qry, nullptr);
     sqlite3_prepare_v2(db,
-        "INSERT INTO docs(path,name,size,mtime,ext,text,err,tlen) VALUES(?,?,?,?,?,?,?,?) "
+        "INSERT INTO docs(path,name,size,mtime,ext,text,err,tlen,gen) "
+        "VALUES(?,?,?,?,?,?,?,?,?) "
         "ON CONFLICT(path) DO UPDATE SET name=excluded.name,size=excluded.size,"
         "mtime=excluded.mtime,ext=excluded.ext,text=excluded.text,err=excluded.err,"
-        "tlen=excluded.tlen",
+        "tlen=excluded.tlen,gen=excluded.gen",
         -1, &ups, nullptr);
+    sqlite3_prepare_v2(db, "UPDATE docs SET gen=? WHERE path=?", -1, &mark, nullptr);
     sqlite3_prepare_v2(db, "DELETE FROM docs_fts WHERE rowid=?", -1, &ftsDel, nullptr);
     sqlite3_prepare_v2(db, "INSERT INTO docs_fts(rowid,text) VALUES(?,?)", -1, &ftsIns, nullptr);
     sqlite3_stmt* getId = nullptr;
     sqlite3_prepare_v2(db, "SELECT id FROM docs WHERE path=?", -1, &getId, nullptr);
+    auto markSeen = [&](const std::string& p) {
+        if (!mark) return;
+        sqlite3_reset(mark);
+        sqlite3_bind_int64(mark, 1, (sqlite3_int64)currentGen);
+        sqlite3_bind_text(mark, 2, p.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_step(mark);
+    };
 
     // 第一阶段：只清点，不存列表。
     // 原来把候选全塞进 vector 再卡 60 万条 —— C 盘 300 多万文件会被静默砍掉一大半，
@@ -878,6 +920,7 @@ void Build(const std::string& root, const std::atomic<bool>& cancel) {
                 const int64_t oldSize = sqlite3_column_int64(qry, 0);
                 const int64_t oldM    = sqlite3_column_int64(qry, 1);
                 if (oldSize == (int64_t)size && oldM == mtime) {
+                    markSeen(full);           // 本次仍见到，保留
                     g_skipped.fetch_add(1);   // 复用上次结果
                     return;
                 }
@@ -889,7 +932,10 @@ void Build(const std::string& root, const std::atomic<bool>& cancel) {
         // OCR 预算用完导致没抽到正文 → 不写库，下次建索引还会重试。
         // 只对"只能靠 OCR 出正文"的图片成立；.dll/.caj 这种不支持的二进制
         // 必须照常入库标 err=1，否则每次建索引都要把它们重试一遍。
-        if (txt.empty() && extract::NeedsOcr(ext) && extract::OcrBudgetLeft() <= 0) return;
+        if (txt.empty() && extract::NeedsOcr(ext) && extract::OcrBudgetLeft() <= 0) {
+            markSeen(full);   // 下次接着 OCR，别在清理阶段当成已删除
+            return;
+        }
         const int err = txt.empty() ? 1 : 0;
         // token 数当“文档长度”：排序时短文档命中更可信
         const std::string tokens = err ? std::string() : FtsTokens(txt);
@@ -911,6 +957,7 @@ void Build(const std::string& root, const std::atomic<bool>& cancel) {
             sqlite3_bind_text(ups, 6, stored.c_str(), (int)stored.size(), SQLITE_TRANSIENT);
             sqlite3_bind_int(ups, 7, err);
             sqlite3_bind_int64(ups, 8, (sqlite3_int64)tlen);
+            sqlite3_bind_int64(ups, 9, (sqlite3_int64)currentGen);
             sqlite3_step(ups);
         }
 
@@ -945,6 +992,40 @@ void Build(const std::string& root, const std::atomic<bool>& cancel) {
 
     Exec(db, "COMMIT;");
 
+    // 清理本次没见到的 path（删除/改名/移出扫描范围）。
+    // 中途取消时不能做：没见到的文件不代表已经被删。
+    if (!cancel.load()) {
+        std::vector<sqlite3_int64> stale;
+        sqlite3_stmt* sel = nullptr;
+        if (sqlite3_prepare_v2(db, "SELECT id FROM docs WHERE gen IS NULL OR gen != ?",
+                               -1, &sel, nullptr) == SQLITE_OK) {
+            sqlite3_bind_int64(sel, 1, (sqlite3_int64)currentGen);
+            while (sqlite3_step(sel) == SQLITE_ROW) stale.push_back(sqlite3_column_int64(sel, 0));
+            sqlite3_finalize(sel);
+        }
+        if (!stale.empty()) {
+            Exec(db, "BEGIN;");
+            sqlite3_stmt* delFts = nullptr;
+            if (sqlite3_prepare_v2(db, "DELETE FROM docs_fts WHERE rowid=?", -1, &delFts,
+                                   nullptr) == SQLITE_OK) {
+                for (sqlite3_int64 id : stale) {
+                    sqlite3_reset(delFts);
+                    sqlite3_bind_int64(delFts, 1, id);
+                    sqlite3_step(delFts);
+                }
+                sqlite3_finalize(delFts);
+            }
+            sqlite3_stmt* delDocs = nullptr;
+            if (sqlite3_prepare_v2(db, "DELETE FROM docs WHERE gen IS NULL OR gen != ?",
+                                   -1, &delDocs, nullptr) == SQLITE_OK) {
+                sqlite3_bind_int64(delDocs, 1, (sqlite3_int64)currentGen);
+                sqlite3_step(delDocs);
+                sqlite3_finalize(delDocs);
+            }
+            Exec(db, "COMMIT;");
+        }
+    }
+
     MetaPut(db, "root", norm);
     MetaPut(db, "built_at", std::to_string((long long)time(nullptr)));
     MetaPut(db, "partial", cancel.load() ? "1" : "0");
@@ -953,6 +1034,7 @@ void Build(const std::string& root, const std::atomic<bool>& cancel) {
 
     if (qry) sqlite3_finalize(qry);
     if (ups) sqlite3_finalize(ups);
+    if (mark) sqlite3_finalize(mark);
     if (ftsDel) sqlite3_finalize(ftsDel);
     if (ftsIns) sqlite3_finalize(ftsIns);
     if (getId) sqlite3_finalize(getId);
@@ -1155,6 +1237,9 @@ std::string TermToFts(const std::string& q) {
                     w.push_back((char)tolower((unsigned char)q[i]));
                     ++i;
                 }
+                // 拉丁词支持前缀：engineer 能命中 engineering，alph 能命中 alpha。
+                // 不支持任意子串（ell 仍在 hello 里搜不到），但覆盖了最常见的英文用法。
+                if (w.size() >= 2) w.push_back('*');
                 if (!out.empty()) out += " AND ";
                 out += w;
                 continue;
